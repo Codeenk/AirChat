@@ -16,7 +16,7 @@
     <!-- Camera feature: not required, so devices without camera can still install -->
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <application
-        android:label="air_chat"
+        android:label="AirChat"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

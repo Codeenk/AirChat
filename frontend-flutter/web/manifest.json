@@ -1,6 +1,6 @@
 {
-    "name": "air_chat",
-    "short_name": "air_chat",
+    "name": "AirChat",
+    "short_name": "AirChat",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

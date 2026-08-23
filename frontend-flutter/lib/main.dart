@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -15,18 +17,10 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   final container = ProviderContainer();
-  final uid = await _initializeIdentity(container);
 
-  if (uid.isNotEmpty) {
-    try {
-      await container.read(firebaseInitializerProvider.future);
-      final pushService = container.read(pushServiceProvider);
-      await pushService.initialize();
-    } catch (_) {
-      // Push unavailable (missing platform config) — messaging still works online
-    }
-    container.read(messageRouterProvider(uid));
-  }
+  // Phase 1 (blocking, but fast — local secure-storage reads only):
+  // load or create the local identity, then paint the UI immediately.
+  final uid = await _loadLocalIdentity(container);
 
   runApp(
     ProviderScope(
@@ -34,26 +28,37 @@ void main() async {
       child: const AirChatApp(),
     ),
   );
+
+  // Phase 2 (deferred): everything that touches the network or platform
+  // plugins runs after the first frame, so it never delays app start-up.
+  unawaited(_initializeServices(container, uid));
 }
 
-Future<String> _initializeIdentity(ProviderContainer container) async {
-  final hasId = await KeyStore.hasIdentity();
-  if (!hasId) {
+/// Loads the local identity without any network or plugin-heavy work.
+Future<String> _loadLocalIdentity(ProviderContainer container) async {
+  final uid = await KeyStore.getUid();
+
+  if (uid == null || uid.isEmpty) {
+    // First launch: generate keys locally (fast, offline). Server
+    // registration happens in the deferred phase below.
     final engine = SodiumEngine();
     final keyPair = await engine.generateIdentityKeyPair();
 
     final signingEngine = SigningEngine();
     final signingKeyPair = await signingEngine.generateSigningKeyPair();
-    final signingPublicKeyHex = await signingEngine.exportSigningPublicKeyHex(signingKeyPair);
+    final signingPublicKeyHex =
+        await signingEngine.exportSigningPublicKeyHex(signingKeyPair);
 
-    final uid = 'usr_${const Uuid().v4().replaceAll('-', '').substring(0, 20)}';
-    final username = 'airchat_${uid.substring(uid.length - 8)}';
+    final newUid =
+        'usr_${const Uuid().v4().replaceAll('-', '').substring(0, 20)}';
+    final username = 'airchat_${newUid.substring(newUid.length - 8)}';
 
     final identityPublicKey = await engine.exportPublicKey(keyPair);
-    final signingSignature = await signingEngine.signHex(identityPublicKey, signingKeyPair);
+    final signingSignature =
+        await signingEngine.signHex(identityPublicKey, signingKeyPair);
 
     await KeyStore.saveUserIdentity(
-      uid: uid,
+      uid: newUid,
       username: username,
       keyPair: keyPair,
       signingPublicKeyHex: signingPublicKeyHex,
@@ -61,22 +66,36 @@ Future<String> _initializeIdentity(ProviderContainer container) async {
     );
 
     await KeyStore.saveSigningKeyPair(signingKeyPair);
-
-    await const ApiClient().registerIdentity(
-      uid: uid,
-      username: username,
-      identityPublicKey: identityPublicKey,
-      signingPublicKey: signingPublicKeyHex,
-      signingSignature: signingSignature,
-    );
+    await KeyStore.getOrCreateDatabaseMasterKey();
+    container.read(currentUidProvider.notifier).state = newUid;
+    return newUid;
   }
 
-  final uid = await KeyStore.getUid() ?? '';
+  await KeyStore.getOrCreateDatabaseMasterKey();
+  container.read(currentUidProvider.notifier).state = uid;
+  return uid;
+}
+
+/// Deferred start-up: server re-registration (self-healing), Firebase/push
+/// wiring and the WebSocket message router. Failures here never block the UI.
+Future<void> _initializeServices(
+    ProviderContainer container, String uid) async {
+  if (uid.isEmpty) return;
+
+  try {
+    await container.read(firebaseInitializerProvider.future);
+    final pushService = container.read(pushServiceProvider);
+    await pushService.initialize();
+  } catch (_) {
+    // Push unavailable (missing platform config) — messaging still works online
+  }
+
+  container.read(messageRouterProvider(uid));
 
   // ALWAYS (re)register on launch — server does an upsert, so this heals
   // identities whose initial registration silently failed. Without this,
   // peers' directory lookups for us return 404 and auto-contact breaks.
-  if (uid.isNotEmpty) {
+  try {
     final pubKey = await KeyStore.getPublicKey() ?? '';
     debugPrint('[AirChat] identity uid=$uid pubKeyLen=${pubKey.length}');
     if (pubKey.isNotEmpty) {
@@ -96,15 +115,9 @@ Future<String> _initializeIdentity(ProviderContainer container) async {
     } else {
       debugPrint('[AirChat] WARNING: identity has empty public key!');
     }
+  } catch (_) {
+    // Offline — queued messages still deliver on reconnect
   }
-
-  if (uid.isNotEmpty) {
-    container.read(currentUidProvider.notifier).state = uid;
-  }
-
-  await KeyStore.getOrCreateDatabaseMasterKey();
-
-  return uid;
 }
 
 class AirChatApp extends StatefulWidget {
@@ -140,7 +153,7 @@ class _AirChatAppState extends State<AirChatApp> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Air Chat',
+      title: 'AirChat',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
