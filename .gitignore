@@ -15,7 +15,6 @@ frontend-flutter/.packages
 frontend-flutter/.pub-cache/
 frontend-flutter/.pub/
 frontend-flutter/build/
-frontend-flutter/pubspec.lock
 
 # Android
 frontend-flutter/android/.gradle/
