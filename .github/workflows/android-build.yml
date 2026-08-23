@@ -3,7 +3,6 @@ name: Android CI
 on:
   push:
     branches: [main]
-    tags: ['v*']
     paths:
       - 'frontend-flutter/**'
       - '.github/workflows/android-build.yml'
@@ -106,10 +105,3 @@ jobs:
           name: airchat-release-apk
           path: frontend-flutter/AirChat-*.apk
           retention-days: 30
-
-      - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: frontend-flutter/AirChat-*.apk
-          generate_release_notes: true
