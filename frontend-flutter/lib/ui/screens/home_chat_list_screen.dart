@@ -29,7 +29,7 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
 
   void _refreshAfterInteraction() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      ref.refresh(chatThreadsProvider);
+      ref.invalidate(chatThreadsProvider);
     });
   }
 

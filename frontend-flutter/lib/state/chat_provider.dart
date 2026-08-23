@@ -4,7 +4,6 @@ import 'package:cryptography/cryptography.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import '../core/crypto/key_store.dart';
-import '../core/crypto/sodium_engine.dart';
 import '../models/chat_thread.dart';
 import '../models/message_payload.dart';
 import 'connection_provider.dart';

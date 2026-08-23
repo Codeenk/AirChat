@@ -5,7 +5,7 @@ import 'dart:typed_data';
 Future<String> saveBytes(String fileName, Uint8List bytes) async {
   final blob = html.Blob([bytes]);
   final url = html.Url.createObjectUrlFromBlob(blob);
-  final anchor = html.AnchorElement(href: url)
+  html.AnchorElement(href: url)
     ..download = fileName
     ..click();
   html.Url.revokeObjectUrl(url);
