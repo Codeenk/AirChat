@@ -16,17 +16,14 @@ subprojects {
     project.layout.buildDirectory.value(newSubprojectBuildDir)
 }
 
-// Force every plugin module to compile against SDK 36 (some plugins pin older
-// SDKs; flutter_plugin_android_lifecycle requires >= 36 metadata).
+// Force every Android plugin module to compile against SDK 36. Some pinned
+// plugin versions (e.g. file_picker) hardcode older compileSdk values, while
+// their dependencies (flutter_plugin_android_lifecycle) require >= 36.
 subprojects {
     afterEvaluate {
-        if (extensions.findByName("android") != null) {
-            val androidExt = extensions.getByName("android")
-            runCatching {
-                androidExt.javaClass.methods
-                    .firstOrNull { it.name == "setCompileSdkVersion" }
-                    ?.invoke(androidExt, 36)
-            }
+        val androidExt = extensions.findByName("android")
+        if (androidExt is com.android.build.gradle.BaseExtension) {
+            androidExt.compileSdkVersion(36)
         }
     }
 }
