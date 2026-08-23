@@ -51,7 +51,7 @@ class ApiClient {
     try {
       final query = uid != null ? "uid=$uid" : "username=$username";
       final uri = Uri.parse("$baseUrl/api/identity/lookup?$query");
-      final response = await http.get(uri);
+      final response = await http.get(uri).timeout(const Duration(seconds: 10));
       if (response.statusCode == 200) {
         return jsonDecode(response.body) as Map<String, dynamic>;
       }

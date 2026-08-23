@@ -268,8 +268,10 @@ class _ChatBubbleState extends State<ChatBubble> {
     final metaColor =
         widget.isMe ? Colors.black54 : AirColors.textSecondary;
 
-    final bubble = AnimatedContainer(
-      duration: const Duration(milliseconds: 250),
+    // Use plain Container — no AnimatedContainer overhead for non-highlighted
+    // bubbles (the vast majority). Highlight border change is instant, which
+    // is fine for a 1.4s flash effect.
+    final bubble = Container(
       margin: EdgeInsets.only(
         top: 3, bottom: 3,
         left: widget.isMe ? 48 : 12,
@@ -328,31 +330,35 @@ class _ChatBubbleState extends State<ChatBubble> {
       ),
     );
 
-    return Align(
-      alignment: widget.isMe ? Alignment.centerRight : Alignment.centerLeft,
-      child: Stack(
-        alignment: widget.isMe ? Alignment.centerLeft : Alignment.centerRight,
-        children: [
-          // Reply arrow revealed behind the bubble while swiping right.
-          Opacity(
-            opacity: (_dragDx / _swipeThreshold).clamp(0.0, 1.0),
-            child: Transform.scale(
-              scale: 0.7 + 0.3 * (_dragDx / _swipeThreshold).clamp(0.0, 1.0),
-              child: const Icon(Icons.reply,
-                  size: 22, color: AirColors.textFaint),
+    // RepaintBoundary isolates each bubble's paint from siblings — prevents
+    // swipe-to-reply gesture from repainting the entire ListView.
+    return RepaintBoundary(
+      child: Align(
+        alignment: widget.isMe ? Alignment.centerRight : Alignment.centerLeft,
+        child: Stack(
+          alignment: widget.isMe ? Alignment.centerLeft : Alignment.centerRight,
+          children: [
+            // Reply arrow revealed behind the bubble while swiping right.
+            Opacity(
+              opacity: (_dragDx / _swipeThreshold).clamp(0.0, 1.0),
+              child: Transform.scale(
+                scale: 0.7 + 0.3 * (_dragDx / _swipeThreshold).clamp(0.0, 1.0),
+                child: const Icon(Icons.reply,
+                    size: 22, color: AirColors.textFaint),
+              ),
             ),
-          ),
-          GestureDetector(
-            onTap:
-                isFailed ? widget.onRetryFailed : null,
-            onHorizontalDragUpdate: _onDragUpdate,
-            onHorizontalDragEnd: _onDragEnd,
-            child: Transform.translate(
-              offset: Offset(_dragDx * 0.55, 0),
-              child: bubble,
+            GestureDetector(
+              onTap:
+                  isFailed ? widget.onRetryFailed : null,
+              onHorizontalDragUpdate: _onDragUpdate,
+              onHorizontalDragEnd: _onDragEnd,
+              child: Transform.translate(
+                offset: Offset(_dragDx * 0.55, 0),
+                child: bubble,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

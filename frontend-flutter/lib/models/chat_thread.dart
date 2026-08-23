@@ -4,6 +4,7 @@ class ChatThread {
   final String lastMessage;
   final int lastMessageTime;
   final int unreadCount;
+  final String contactUsername;
 
   ChatThread({
     required this.id,
@@ -11,6 +12,7 @@ class ChatThread {
     required this.lastMessage,
     required this.lastMessageTime,
     this.unreadCount = 0,
+    this.contactUsername = '',
   });
 
   Map<String, dynamic> toMap() => {
@@ -27,5 +29,6 @@ class ChatThread {
         lastMessage: map['last_message'] ?? '',
         lastMessageTime: map['last_message_time'] ?? 0,
         unreadCount: map['unread_count'] ?? 0,
+        contactUsername: map['contact_username'] ?? '',
       );
 }

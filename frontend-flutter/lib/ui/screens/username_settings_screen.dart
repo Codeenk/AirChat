@@ -127,25 +127,7 @@ class _UsernameSettingsScreenState extends State<UsernameSettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Container(
-                    width: 72,
-                    height: 72,
-                    alignment: Alignment.center,
-                    decoration: const BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: AirColors.bubbleMe,
-                    ),
-                    child: Text(
-                      _controller.text.isNotEmpty
-                          ? _controller.text[0].toUpperCase()
-                          : 'A',
-                      style: const TextStyle(
-                        color: AirColors.bubbleMeText,
-                        fontSize: 30,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
+                  _AvatarPreview(controller: _controller),
                   const SizedBox(height: 24),
                   const Text(
                     'This name is shown to people who scan your QR code and '
@@ -182,7 +164,7 @@ class _UsernameSettingsScreenState extends State<UsernameSettingsScreen> {
                       errorText: _error,
                       counterStyle: const TextStyle(color: AirColors.textFaint),
                     ),
-                    onChanged: (_) => setState(() {}),
+                    onChanged: (_) {},
                     onSubmitted: (_) => _save(),
                   ),
                   if (_currentUid != null && _currentUid!.isNotEmpty) ...[
@@ -217,6 +199,42 @@ class _UsernameSettingsScreenState extends State<UsernameSettingsScreen> {
                 ],
               ),
             ),
+    );
+  }
+}
+
+/// Avatar that rebuilds only itself on keystroke via ValueListenableBuilder,
+/// instead of triggering a full-screen setState.
+class _AvatarPreview extends StatelessWidget {
+  final TextEditingController controller;
+  const _AvatarPreview({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<TextEditingValue>(
+      valueListenable: controller,
+      builder: (context, value, _) {
+        final letter = value.text.isNotEmpty
+            ? value.text[0].toUpperCase()
+            : 'A';
+        return Container(
+          width: 72,
+          height: 72,
+          alignment: Alignment.center,
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            color: AirColors.bubbleMe,
+          ),
+          child: Text(
+            letter,
+            style: const TextStyle(
+              color: AirColors.bubbleMeText,
+              fontSize: 30,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        );
+      },
     );
   }
 }

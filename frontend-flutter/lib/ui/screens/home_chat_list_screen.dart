@@ -136,93 +136,88 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
       DateTime.fromMillisecondsSinceEpoch(thread.lastMessageTime),
     );
 
-    String displayName = "Peer";
-    Widget leading = _Avatar(letter: thread.contactUid.isNotEmpty ? thread.contactUid[0].toUpperCase() : 'P');
+    // Contact username is pre-loaded via JOIN query — no FutureBuilder needed.
+    final displayName = thread.contactUsername.isNotEmpty
+        ? thread.contactUsername
+        : "Peer";
+    final leading = _Avatar(
+      letter: displayName.isNotEmpty ? displayName[0].toUpperCase() : 'P',
+    );
 
-    return FutureBuilder(
-      future: ContactDao().getContactByUid(thread.contactUid),
-      builder: (context, snapshot) {
-        if (snapshot.hasData && snapshot.data != null) {
-          final contact = snapshot.data!;
-          displayName = contact.username;
-          leading = _Avatar(letter: contact.username.isNotEmpty ? contact.username[0].toUpperCase() : 'P');
-        }
-        return ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          leading: leading,
-          title: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Expanded(
-                child: Text(
-                  displayName,
-                  style: const TextStyle(
-                    color: AirColors.textPrimary,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 16,
-                    letterSpacing: -0.2,
-                  ),
-                ),
-              ),
-              Text(
-                timeStr,
-                style: const TextStyle(color: AirColors.textFaint, fontSize: 12),
-              ),
-            ],
-          ),
-          subtitle: Padding(
-            padding: const EdgeInsets.only(top: 4.0),
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      leading: leading,
+      title: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Expanded(
             child: Text(
-              thread.lastMessage,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: AirColors.textSecondary, fontSize: 14),
+              displayName,
+              style: const TextStyle(
+                color: AirColors.textPrimary,
+                fontWeight: FontWeight.w600,
+                fontSize: 16,
+                letterSpacing: -0.2,
+              ),
             ),
           ),
-          onTap: () async {
-            var contact = await ContactDao().getContactByUid(thread.contactUid);
+          Text(
+            timeStr,
+            style: const TextStyle(color: AirColors.textFaint, fontSize: 12),
+          ),
+        ],
+      ),
+      subtitle: Padding(
+        padding: const EdgeInsets.only(top: 4.0),
+        child: Text(
+          thread.lastMessage,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: AirColors.textSecondary, fontSize: 14),
+        ),
+      ),
+      onTap: () async {
+        var contact = await ContactDao().getContactByUid(thread.contactUid);
 
-            // Self-heal: missing or keyless contact gets resolved from directory
-            if (contact == null || contact.identityPublicKey.isEmpty) {
-              try {
-                final info = await const ApiClient()
-                    .lookupIdentity(uid: thread.contactUid);
-                if (info != null) {
-                  contact = Contact(
-                    uid: thread.contactUid,
-                    username: (info['username'] as String?) ?? 'Peer',
-                    identityPublicKey:
-                        (info['identity_public_key'] as String?) ?? '',
-                    createdAt: DateTime.now().millisecondsSinceEpoch,
-                  );
-                  await ContactDao().insertContact(contact);
-                }
-              } catch (_) {}
-            }
-
-            if (contact == null) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text("Contact unavailable")),
+        // Self-heal: missing or keyless contact gets resolved from directory
+        if (contact == null || contact.identityPublicKey.isEmpty) {
+          try {
+            final info = await const ApiClient()
+                .lookupIdentity(uid: thread.contactUid);
+            if (info != null) {
+              contact = Contact(
+                uid: thread.contactUid,
+                username: (info['username'] as String?) ?? 'Peer',
+                identityPublicKey:
+                    (info['identity_public_key'] as String?) ?? '',
+                createdAt: DateTime.now().millisecondsSinceEpoch,
               );
-              return;
+              await ContactDao().insertContact(contact);
             }
-            final resolved = Contact(
-              uid: contact.uid,
-              username: contact.username,
-              identityPublicKey: contact.identityPublicKey,
-              createdAt: contact.createdAt,
-            );
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => ChatRoomScreen(
-                  contactName: resolved.username,
-                  contactUid: resolved.uid,
-                  contactPublicKey: resolved.identityPublicKey,
-                ),
-              ),
-            );
-          },
+          } catch (_) {}
+        }
+
+        if (contact == null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Contact unavailable")),
+          );
+          return;
+        }
+        final resolved = Contact(
+          uid: contact.uid,
+          username: contact.username,
+          identityPublicKey: contact.identityPublicKey,
+          createdAt: contact.createdAt,
+        );
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ChatRoomScreen(
+              contactName: resolved.username,
+              contactUid: resolved.uid,
+              contactPublicKey: resolved.identityPublicKey,
+            ),
+          ),
         );
       },
     );

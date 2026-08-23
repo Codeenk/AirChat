@@ -24,7 +24,7 @@ class AppDatabase {
       return await databaseFactoryFfiWeb.openDatabase(
         '/airchat/airchat_web.db',
         options: OpenDatabaseOptions(
-          version: 2,
+          version: 3,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         ),
@@ -37,7 +37,7 @@ class AppDatabase {
     return await openDatabase(
       path,
       password: masterKey,
-      version: 2,
+      version: 3,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -62,6 +62,8 @@ class AppDatabase {
         unread_count INTEGER DEFAULT 0
       )
     ''');
+    await db.execute(
+        'CREATE INDEX idx_chat_threads_time ON chat_threads(last_message_time DESC)');
 
     await db.execute('''
       CREATE TABLE messages (
@@ -83,6 +85,8 @@ class AppDatabase {
         reply_is_me INTEGER
       )
     ''');
+    await db.execute(
+        'CREATE INDEX idx_messages_chat_time ON messages(chat_id, timestamp ASC)');
   }
 
   static Future<void> _onUpgrade(
@@ -93,6 +97,13 @@ class AppDatabase {
       await db.execute('ALTER TABLE messages ADD COLUMN reply_text TEXT');
       await db.execute('ALTER TABLE messages ADD COLUMN reply_type TEXT');
       await db.execute('ALTER TABLE messages ADD COLUMN reply_is_me INTEGER');
+    }
+    if (oldVersion < 3) {
+      // v3: performance indexes for chat_id+timestamp and thread ordering.
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages(chat_id, timestamp ASC)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_chat_threads_time ON chat_threads(last_message_time DESC)');
     }
   }
 

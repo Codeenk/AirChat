@@ -68,6 +68,7 @@ class MessageRouter {
   final ChatDao chatDao;
   final ContactDao contactDao;
   final RefreshBus bus;
+  bool _started = false;
 
   MessageRouter({
     required this.uid,
@@ -79,7 +80,11 @@ class MessageRouter {
     required this.bus,
   });
 
+  /// Idempotent start — safe to call multiple times without duplicating
+  /// WebSocket connections or stream listeners.
   void start() {
+    if (_started) return;
+    _started = true;
     client.connect();
     client.messageStream.listen(_onMessage);
   }
@@ -145,46 +150,16 @@ class MessageRouter {
 
       final chatId = _chatId(uid, senderUid);
 
-      // ---- Auto-contact: unknown sender is resolved via directory and
-      // added locally, so the recipient can see AND reply immediately
-      // without scanning back. ----
+      // Resolve contact name inline (fast, no network) — use fallback if unknown.
       final existing = await contactDao.getContactByUid(senderUid);
-      if (existing == null) {
-        String username;
-        String publicKey;
-        try {
-          final info = await const ApiClient().lookupIdentity(uid: senderUid);
-          username = (info?['username'] as String?) ?? _fallbackName(senderUid);
-          publicKey = (info?['identity_public_key'] as String?) ?? '';
-        } catch (_) {
-          username = _fallbackName(senderUid);
-          publicKey = '';
-        }
-        await contactDao.insertContact(Contact(
-          uid: senderUid,
-          username: username,
-          identityPublicKey: publicKey,
-          createdAt: DateTime.now().millisecondsSinceEpoch,
-        ));
-      } else if (_isFallbackName(existing.username)) {
-        // Self-heal: upgrade placeholder names (peer_xxxx / airchat_xxxx)
-        // to the sender's real directory username once it exists.
-        try {
-          final info = await const ApiClient().lookupIdentity(uid: senderUid);
-          final realName = info?['username'] as String?;
-          if (realName != null &&
-              realName.isNotEmpty &&
-              realName != existing.username) {
-            await contactDao.insertContact(Contact(
-              uid: existing.uid,
-              username: realName,
-              identityPublicKey: existing.identityPublicKey,
-              createdAt: existing.createdAt,
-            ));
-          }
-        } catch (_) {}
+      String contactName;
+      if (existing != null && !_isFallbackName(existing.username)) {
+        contactName = existing.username;
+      } else {
+        contactName = _fallbackName(senderUid);
       }
 
+      // Store message IMMEDIATELY — never block on network lookups.
       final message = ChatMessage(
         id: packetId,
         chatId: chatId,
@@ -218,17 +193,52 @@ class MessageRouter {
       // Background/terminated: surface a visible local notification with the
       // sender's display name and a message preview.
       if (!NotificationService.isAppForeground) {
-        final contact = await contactDao.getContactByUid(senderUid);
-        final senderName =
-            contact?.username ?? _fallbackName(senderUid);
         await NotificationService.instance.showMessageNotification(
-          title: senderName,
+          title: contactName,
           body: text.isEmpty ? '📎 $messageType' : text,
         );
       }
+
+      // Background directory resolution — never blocks message delivery.
+      _resolveContactInBackground(senderUid);
     } catch (e) {
       // Decryption failed or message already stored
     }
+  }
+
+  /// Fire-and-forget: resolve or upgrade contact name from directory.
+  /// Updates local DB and fires a RefreshBus event so UI surfaces pick up
+  /// the real name without blocking message processing.
+  void _resolveContactInBackground(String senderUid) async {
+    try {
+      final existing = await contactDao.getContactByUid(senderUid);
+      if (existing == null) {
+        final info = await const ApiClient().lookupIdentity(uid: senderUid);
+        final username = (info?['username'] as String?) ?? _fallbackName(senderUid);
+        final publicKey = (info?['identity_public_key'] as String?) ?? '';
+        await contactDao.insertContact(Contact(
+          uid: senderUid,
+          username: username,
+          identityPublicKey: publicKey,
+          createdAt: DateTime.now().millisecondsSinceEpoch,
+        ));
+        bus.fire(RefreshEvent(type: 'messages'));
+      } else if (_isFallbackName(existing.username)) {
+        final info = await const ApiClient().lookupIdentity(uid: senderUid);
+        final realName = info?['username'] as String?;
+        if (realName != null &&
+            realName.isNotEmpty &&
+            realName != existing.username) {
+          await contactDao.insertContact(Contact(
+            uid: existing.uid,
+            username: realName,
+            identityPublicKey: existing.identityPublicKey,
+            createdAt: existing.createdAt,
+          ));
+          bus.fire(RefreshEvent(type: 'messages'));
+        }
+      }
+    } catch (_) {}
   }
 
   String _chatId(String myUid, String peerUid) {
@@ -260,8 +270,14 @@ final messageRouterProvider = Provider.family<MessageRouter, String>((ref, uid) 
     bus: ref.watch(refreshBusProvider),
   );
 
-  client.connect();
-  client.messageStream.listen(router._onMessage);
+  // Idempotent start — safe even if provider is rebuilt (won't duplicate
+  // WebSocket connections or stream listeners).
+  router.start();
+
+  // Prevent this provider from being disposed on last listener removal.
+  // The MessageRouter owns a WebSocket connection that must persist for
+  // the app lifetime.
+  ref.keepAlive();
 
   return router;
 });

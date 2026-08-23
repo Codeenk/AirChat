@@ -20,12 +20,17 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
   final Ref ref;
   final String activeChatId;
   StreamSubscription<RefreshEvent>? _busSub;
+  int _offset = 0;
+  bool _hasMore = true;
+  static const int _pageSize = 50;
 
   ChatStateNotifier(this.ref, this.activeChatId) : super([]) {
-    _loadMessages();
+    _loadInitialMessages();
     _subscribeToRefreshBus();
     ref.onDispose(() => _busSub?.cancel());
   }
+
+  bool get hasMore => _hasMore;
 
   /// Live updates: reload on new messages for this chat, patch statuses in-place.
   void _subscribeToRefreshBus() {
@@ -36,7 +41,7 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     if (event.type == 'messages') {
       // New message(s) stored — reload if for this chat (null = any chat).
       if (event.chatId == null || event.chatId == activeChatId) {
-        _loadMessages();
+        _reloadMessages();
       }
     } else if (event.type == 'status' && event.messageId != null) {
       // Patch status in-place — instant tick update, then persist.
@@ -59,11 +64,55 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     }
   }
 
-  Future<void> _loadMessages() async {
+  /// Initial load: fetch the latest page from the tail of the table.
+  Future<void> _loadInitialMessages() async {
     final messageDao = ref.read(messageDaoProvider);
-    final messages = await messageDao.getMessagesForChat(activeChatId);
+    final totalCount = await messageDao.getMessageCount(activeChatId);
+    _offset = (totalCount - _pageSize).clamp(0, totalCount);
+    _hasMore = _offset > 0;
+
+    final messages = await messageDao.getMessagesForChat(
+      activeChatId,
+      limit: _pageSize,
+      offset: _offset,
+    );
     if (!mounted) return;
     state = messages;
+  }
+
+  /// On new message events: reload the latest page (preserves scroll position
+  /// if user is near the bottom).
+  Future<void> _reloadMessages() async {
+    final messageDao = ref.read(messageDaoProvider);
+    final totalCount = await messageDao.getMessageCount(activeChatId);
+    _offset = (totalCount - _pageSize).clamp(0, totalCount);
+    _hasMore = _offset > 0;
+
+    final messages = await messageDao.getMessagesForChat(
+      activeChatId,
+      limit: _pageSize,
+      offset: _offset,
+    );
+    if (!mounted) return;
+    state = messages;
+  }
+
+  /// Load older messages when user scrolls to top.
+  Future<void> loadMore() async {
+    if (!_hasMore) return;
+    final messageDao = ref.read(messageDaoProvider);
+    final newOffset = _offset - _pageSize;
+    final offset = newOffset < 0 ? 0 : newOffset;
+
+    final older = await messageDao.getMessagesForChat(
+      activeChatId,
+      limit: _pageSize,
+      offset: offset,
+    );
+    if (!mounted) return;
+    _offset = offset;
+    _hasMore = _offset > 0;
+    state = [...older, ...state];
   }
 
   /// If no server ack (relayed/queued) arrives in time, surface the failure
@@ -292,11 +341,12 @@ final activeChatMessagesProvider =
 
 /// Reactive home list: initial load, then re-emits on every bus event
 /// (new incoming message, status change) so previews/timestamps update live.
+/// Uses a single JOIN query to embed contact usernames — no N+1 queries.
 final chatThreadsProvider = StreamProvider.autoDispose<List<ChatThread>>((ref) async* {
   final chatDao = ref.watch(chatDaoProvider);
-  yield await chatDao.getAllChats();
+  yield await chatDao.getAllChatsWithContacts();
 
   await for (final _ in ref.watch(refreshBusProvider).stream) {
-    yield await chatDao.getAllChats();
+    yield await chatDao.getAllChatsWithContacts();
   }
 });
