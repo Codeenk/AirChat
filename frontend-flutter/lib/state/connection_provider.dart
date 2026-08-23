@@ -140,6 +140,8 @@ class MessageRouter {
       final mediaKey = decoded['mediaKey'];
       final secretKeyHex = decoded['secretKeyHex'];
       final nonceHex = decoded['nonceHex'];
+      final replyTo =
+          (decoded['replyTo'] as Map<String, dynamic>?) ?? const {};
 
       final chatId = _chatId(uid, senderUid);
 
@@ -196,6 +198,10 @@ class MessageRouter {
         timestamp: timestamp,
         isMe: false,
         status: 'delivered',
+        replyToId: replyTo['id'] as String?,
+        replyText: (replyTo['text'] as String?) ?? '',
+        replyType: (replyTo['type'] as String?) ?? 'text',
+        replyIsMe: replyTo['isMe'] as bool?,
       );
 
       await messageDao.insertMessage(message);

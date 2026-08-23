@@ -158,14 +158,20 @@ export class ConnectionRelay {
   // FCM Silent Data-only Push Wake Notification (containing zero message content)
   private async dispatchSilentPushWake(recipientUid: string, senderUid: string): Promise<void> {
     try {
-      const fcmTokenRow = await this.env.DB.prepare(
-        "SELECT fcm_token FROM users WHERE uid = ?"
-      ).bind(recipientUid).first();
+      // Single query: recipient's push token + sender's display name (so the
+      // client can render the notification without a directory round-trip).
+      const row: { fcm_token: string | null; sender_username: string | null } | null =
+        await this.env.DB.prepare(
+          `SELECT r.fcm_token AS fcm_token, s.username AS sender_username
+           FROM users r
+           LEFT JOIN users s ON s.uid = ?2
+           WHERE r.uid = ?1`
+        ).bind(recipientUid, senderUid).first();
 
-      const fcmToken = fcmTokenRow?.fcm_token;
+      const fcmToken = row?.fcm_token;
       if (!fcmToken) return;
 
-      await sendSilentWake(this.env, fcmToken, senderUid);
+      await sendSilentWake(this.env, fcmToken, senderUid, row?.sender_username ?? undefined);
     } catch {
       // Ignore push dispatch errors if FCM is unconfigured
     }

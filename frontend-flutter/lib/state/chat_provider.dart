@@ -107,6 +107,7 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
         mediaKey: msg.mediaKey,
         secretKeyHex: msg.secretKeyHex,
         nonceHex: msg.nonceHex,
+        replyTo: msg.hasReply ? msg : null,
         recipientPublicKeyBase64: recipientPublicKeyBase64,
         senderKeyPair: senderKeyPair,
       );
@@ -126,6 +127,7 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     String? mediaKey,
     String? secretKeyHex,
     String? nonceHex,
+    ChatMessage? replyTo,
     required String recipientPublicKeyBase64,
     required SimpleKeyPair senderKeyPair,
   }) async {
@@ -138,6 +140,13 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
       if (mediaKey != null) 'mediaKey': mediaKey,
       if (secretKeyHex != null) 'secretKeyHex': secretKeyHex,
       if (nonceHex != null) 'nonceHex': nonceHex,
+      if (replyTo != null)
+        'replyTo': {
+          'id': replyTo.id,
+          'text': replyTo.text,
+          'type': replyTo.type,
+          'isMe': replyTo.isMe,
+        },
     });
 
     final cryptoPayload = await engine.encryptMessage(
@@ -153,6 +162,7 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     required String recipientUid,
     required String recipientPublicKeyBase64,
     required String text,
+    ChatMessage? replyTo,
   }) async {
     final senderUid = await KeyStore.getUid() ?? '';
     final senderKeyPair = await KeyStore.getKeyPair();
@@ -168,6 +178,10 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
       timestamp: DateTime.now().millisecondsSinceEpoch,
       isMe: true,
       status: 'sending',
+      replyToId: replyTo?.id,
+      replyText: replyTo?.text ?? '',
+      replyType: replyTo?.type ?? 'text',
+      replyIsMe: replyTo?.isMe,
     );
 
     await ref.read(messageDaoProvider).insertMessage(message);
@@ -187,6 +201,7 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     final encryptedPayload = await _encryptMessagePayload(
       text: text,
       type: 'text',
+      replyTo: replyTo,
       recipientPublicKeyBase64: recipientPublicKeyBase64,
       senderKeyPair: senderKeyPair,
     );
@@ -208,6 +223,7 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     String? mediaKey,
     String? secretKeyHex,
     String? nonceHex,
+    ChatMessage? replyTo,
   }) async {
     final senderUid = await KeyStore.getUid() ?? '';
     final senderKeyPair = await KeyStore.getKeyPair();
@@ -227,6 +243,10 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
       timestamp: DateTime.now().millisecondsSinceEpoch,
       isMe: true,
       status: 'sending',
+      replyToId: replyTo?.id,
+      replyText: replyTo?.text ?? '',
+      replyType: replyTo?.type ?? 'text',
+      replyIsMe: replyTo?.isMe,
     );
 
     await ref.read(messageDaoProvider).insertMessage(message);
@@ -249,6 +269,7 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
       mediaKey: mediaKey,
       secretKeyHex: secretKeyHex,
       nonceHex: nonceHex,
+      replyTo: replyTo,
       recipientPublicKeyBase64: recipientPublicKeyBase64,
       senderKeyPair: senderKeyPair,
     );

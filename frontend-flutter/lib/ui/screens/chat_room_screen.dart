@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,6 +10,7 @@ import '../../core/network/api_client.dart';
 import '../../core/network/media_uploader.dart';
 import '../../core/network/websocket_client.dart';
 import '../../core/theme/colors.dart';
+import '../../models/message_payload.dart';
 import '../../state/chat_provider.dart';
 import '../../state/connection_provider.dart';
 import '../widgets/attachment_bottom_sheet.dart';
@@ -34,6 +36,10 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   String? _myUid;
+  ChatMessage? _replyTo;
+  String? _highlightedMessageId;
+  final Map<String, GlobalKey> _messageKeys = {};
+  Timer? _highlightTimer;
 
   @override
   void initState() {
@@ -41,11 +47,45 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     _initAsync();
   }
 
+  @override
+  void dispose() {
+    _highlightTimer?.cancel();
+    super.dispose();
+  }
+
   Future<void> _initAsync() async {
     final uid = await KeyStore.getUid();
     if (uid != null) {
       setState(() => _myUid = uid);
     }
+  }
+
+  void _startReply(ChatMessage msg) {
+    setState(() => _replyTo = msg);
+    FocusScope.of(context).unfocus();
+  }
+
+  void _cancelReply() {
+    if (mounted) setState(() => _replyTo = null);
+  }
+
+  /// Jump to the original message when its quote is tapped.
+  void _jumpToMessage(String messageId) {
+    final key = _messageKeys[messageId];
+    final ctx = key?.currentContext;
+    if (ctx != null) {
+      Scrollable.ensureVisible(
+        ctx,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOutCubic,
+        alignment: 0.35,
+      );
+    }
+    _highlightTimer?.cancel();
+    setState(() => _highlightedMessageId = messageId);
+    _highlightTimer = Timer(const Duration(milliseconds: 1400), () {
+      if (mounted) setState(() => _highlightedMessageId = null);
+    });
   }
 
   void _sendMessage() {
@@ -57,8 +97,10 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
       recipientUid: widget.contactUid,
       recipientPublicKeyBase64: widget.contactPublicKey,
       text: text,
+      replyTo: _replyTo,
     );
     _textController.clear();
+    _cancelReply();
     _scrollToBottom();
   }
 
@@ -108,7 +150,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
         mediaKey: result.fileKey,
         secretKeyHex: result.secretKeyHex,
         nonceHex: result.nonceHex,
+        replyTo: _replyTo,
       );
+      _cancelReply();
       _scrollToBottom();
     } catch (e) {
       if (mounted) {
@@ -275,30 +319,54 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                     itemCount: messages.length,
                     itemBuilder: (context, index) {
                       final msg = messages[index];
-                      return ChatBubble(
-                        text: msg.text,
-                        isMe: msg.isMe,
-                        timestamp: msg.timestamp,
-                        status: msg.status,
-                        type: msg.type,
-                        mediaKey: msg.mediaKey,
-                        secretKeyHex: msg.secretKeyHex,
-                        nonceHex: msg.nonceHex,
-                        backendUrl: ApiClient.defaultBaseUrl,
-                        onRetryFailed: msg.isMe && msg.status == 'failed'
-                            ? () => ref
-                                .read(activeChatMessagesProvider(chatId)
-                                    .notifier)
-                                .resendMessage(
-                                  msg,
-                                  recipientPublicKeyBase64:
-                                      widget.contactPublicKey,
-                                )
-                            : null,
+                      final msgKey = _messageKeys.putIfAbsent(
+                          msg.id, () => GlobalKey());
+                      return Container(
+                        key: ValueKey('slot_${msg.id}'),
+                        child: ChatBubble(
+                          key: msgKey,
+                          text: msg.text,
+                          isMe: msg.isMe,
+                          timestamp: msg.timestamp,
+                          status: msg.status,
+                          type: msg.type,
+                          mediaKey: msg.mediaKey,
+                          secretKeyHex: msg.secretKeyHex,
+                          nonceHex: msg.nonceHex,
+                          backendUrl: ApiClient.defaultBaseUrl,
+                          peerName: widget.contactName,
+                          replyToId: msg.replyToId,
+                          replyText: msg.replyText,
+                          replyType: msg.replyType,
+                          replyIsMe: msg.replyIsMe,
+                          highlighted:
+                              _highlightedMessageId == msg.id,
+                          onSwipeReply: () => _startReply(msg),
+                          onTapQuote: msg.hasReply
+                              ? () => _jumpToMessage(msg.replyToId!)
+                              : null,
+                          onRetryFailed: msg.isMe && msg.status == 'failed'
+                              ? () => ref
+                                  .read(activeChatMessagesProvider(chatId)
+                                      .notifier)
+                                  .resendMessage(
+                                    msg,
+                                    recipientPublicKeyBase64:
+                                        widget.contactPublicKey,
+                                  )
+                              : null,
+                        ),
                       );
                     },
                   ),
           ),
+          if (_replyTo != null)
+            ReplyPreviewBar(
+              message: _replyTo!,
+              peerName: widget.contactName,
+              onCancel: _cancelReply,
+              onTap: () => _jumpToMessage(_replyTo!.id),
+            ),
           _buildInputBar(),
         ],
       ),
@@ -356,6 +424,99 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Quoted-message strip shown above the input bar while composing a reply.
+class ReplyPreviewBar extends StatelessWidget {
+  final ChatMessage message;
+  final String peerName;
+  final VoidCallback onCancel;
+  final VoidCallback onTap;
+
+  const ReplyPreviewBar({
+    Key? key,
+    required this.message,
+    required this.peerName,
+    required this.onCancel,
+    required this.onTap,
+  }) : super(key: key);
+
+  String get _preview {
+    switch (message.type) {
+      case 'image':
+        return '\u{1F4F7} Photo';
+      case 'document':
+        return '\u{1F4CE} ${message.text.isEmpty ? 'Document' : message.text}';
+      case 'voice':
+        return '\u{1F3A4} Voice note';
+      default:
+        return message.text;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AirColors.background,
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          decoration: const BoxDecoration(
+            border: Border(top: BorderSide(color: AirColors.divider)),
+          ),
+          padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: AirColors.surfaceLight,
+                    border: const Border(
+                      left: BorderSide(color: AirColors.accent, width: 3),
+                    ),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        message.isMe ? 'Replying to yourself' : 'Replying to $peerName',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AirColors.accent,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -0.1,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        _preview,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AirColors.textSecondary,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close, size: 20, color: AirColors.textSecondary),
+                onPressed: onCancel,
+                splashRadius: 20,
+              ),
+            ],
+          ),
         ),
       ),
     );

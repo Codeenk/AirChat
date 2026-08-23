@@ -2,7 +2,6 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'notification_service.dart';
 import '../network/api_client.dart';
-import '../crypto/key_store.dart';
 import '../database/daos/contact_dao.dart';
 
 class PushService {
@@ -61,6 +60,19 @@ Future<String> _resolveSenderName(String? senderUid) async {
 Future<void> _showWakeNotification(RemoteMessage message) async {
   final data = message.data;
   if (data['type'] != 'wake') return;
+
+  // Fast path: the wake payload carries the sender's public display name,
+  // so a killed app can render instantly — no DB open, no network call.
+  final serverName = (data['senderName'] as String?)?.trim();
+  if (serverName != null && serverName.isNotEmpty) {
+    await NotificationService.instance.showMessageNotification(
+      title: serverName,
+      body: 'You have a new message',
+    );
+    return;
+  }
+
+  // Slow fallback: resolve the name locally / via directory.
   final name = await _resolveSenderName(data['senderUid'] as String?);
   await NotificationService.instance.showMessageNotification(
     title: name,
@@ -80,7 +92,7 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   if (Firebase.apps.isEmpty) {
     await Firebase.initializeApp();
   }
-  await KeyStore.getOrCreateDatabaseMasterKey();
   await NotificationService.instance.initialize();
+  // Show immediately — no key derivation, no DB, no network on this path.
   await _showWakeNotification(message);
 }

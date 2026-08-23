@@ -23,7 +23,11 @@ class AppDatabase {
       // Web: sqlite3.wasm-backed factory (SQLCipher unavailable in wasm).
       return await databaseFactoryFfiWeb.openDatabase(
         '/airchat/airchat_web.db',
-        options: OpenDatabaseOptions(version: 1, onCreate: _onCreate),
+        options: OpenDatabaseOptions(
+          version: 2,
+          onCreate: _onCreate,
+          onUpgrade: _onUpgrade,
+        ),
       );
     }
 
@@ -33,8 +37,9 @@ class AppDatabase {
     return await openDatabase(
       path,
       password: masterKey,
-      version: 1,
+      version: 2,
       onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
     );
   }
 
@@ -71,9 +76,24 @@ class AppDatabase {
         type TEXT NOT NULL,
         timestamp INTEGER NOT NULL,
         is_me INTEGER NOT NULL,
-        status TEXT NOT NULL
+        status TEXT NOT NULL,
+        reply_to_id TEXT,
+        reply_text TEXT,
+        reply_type TEXT,
+        reply_is_me INTEGER
       )
     ''');
+  }
+
+  static Future<void> _onUpgrade(
+      Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      // v2: quoted-reply columns on messages (denormalized reply snapshot).
+      await db.execute('ALTER TABLE messages ADD COLUMN reply_to_id TEXT');
+      await db.execute('ALTER TABLE messages ADD COLUMN reply_text TEXT');
+      await db.execute('ALTER TABLE messages ADD COLUMN reply_type TEXT');
+      await db.execute('ALTER TABLE messages ADD COLUMN reply_is_me INTEGER');
+    }
   }
 
   static Future<void> close() async {

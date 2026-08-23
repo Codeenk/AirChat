@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import '../../core/theme/colors.dart';
 import 'encrypted_media_views.dart';
 import 'voice_note_player.dart';
 
-class ChatBubble extends StatelessWidget {
+class ChatBubble extends StatefulWidget {
   final String text;
   final bool isMe;
   final int timestamp;
@@ -15,6 +16,22 @@ class ChatBubble extends StatelessWidget {
   final String? nonceHex;
   final String backendUrl;
   final VoidCallback? onRetryFailed;
+
+  // Quoted-reply snapshot (rendered inside the bubble).
+  final String? replyToId;
+  final String? replyText;
+  final String? replyType;
+  final bool? replyIsMe;
+
+  // Display name used in the quote header ("You" vs peer name).
+  final String peerName;
+
+  // Swipe-right-to-reply + tap-quote-to-jump wiring.
+  final VoidCallback? onSwipeReply;
+  final VoidCallback? onTapQuote;
+
+  /// Briefly true after jumping to this message from a quote tap.
+  final bool highlighted;
 
   const ChatBubble({
     Key? key,
@@ -28,19 +45,72 @@ class ChatBubble extends StatelessWidget {
     this.nonceHex,
     this.backendUrl = '',
     this.onRetryFailed,
+    this.replyToId,
+    this.replyText,
+    this.replyType,
+    this.replyIsMe,
+    this.peerName = '',
+    this.onSwipeReply,
+    this.onTapQuote,
+    this.highlighted = false,
   }) : super(key: key);
 
+  @override
+  State<ChatBubble> createState() => _ChatBubbleState();
+}
+
+class _ChatBubbleState extends State<ChatBubble> {
+  static const double _swipeThreshold = 64;
+  double _dragDx = 0;
+  bool _firedHaptic = false;
+
   bool get _hasMedia =>
-      mediaKey != null &&
-      mediaKey!.isNotEmpty &&
-      secretKeyHex != null &&
-      nonceHex != null;
+      widget.mediaKey != null &&
+      widget.mediaKey!.isNotEmpty &&
+      widget.secretKeyHex != null &&
+      widget.nonceHex != null;
+
+  bool get _hasReply =>
+      widget.replyToId != null && widget.replyToId!.isNotEmpty;
+
+  String get _quotePreview {
+    switch (widget.replyType) {
+      case 'image':
+        return '\u{1F4F7} Photo';
+      case 'document':
+        return '\u{1F4CE} ${widget.replyText?.isEmpty ?? true ? 'Document' : widget.replyText}';
+      case 'voice':
+        return '\u{1F3A4} Voice note';
+      default:
+        return widget.replyText ?? '';
+    }
+  }
+
+  void _onDragUpdate(DragUpdateDetails d) {
+    if (widget.onSwipeReply == null) return;
+    setState(() {
+      _dragDx = (_dragDx + d.delta.dx).clamp(0.0, _swipeThreshold * 1.35);
+    });
+    if (!_firedHaptic && _dragDx >= _swipeThreshold) {
+      _firedHaptic = true;
+      HapticFeedback.mediumImpact();
+    }
+  }
+
+  void _onDragEnd(DragEndDetails details) {
+    if (widget.onSwipeReply == null) return;
+    final fastFlick = (details.primaryVelocity ?? 0) > 450;
+    final shouldReply = _dragDx >= _swipeThreshold || (fastFlick && _dragDx > 12);
+    if (shouldReply) widget.onSwipeReply!();
+    setState(() => _dragDx = 0);
+    _firedHaptic = false;
+  }
 
   Widget _buildStatusIcon() {
-    if (!isMe) return const SizedBox.shrink();
+    if (!widget.isMe) return const SizedBox.shrink();
     final onLight = Colors.black54;
 
-    switch (status) {
+    switch (widget.status) {
       case 'failed':
         return const Icon(Icons.error_outline, size: 14, color: Color(0xFFB3261E));
       case 'sending':
@@ -56,14 +126,14 @@ class ChatBubble extends StatelessWidget {
   }
 
   Widget _buildContent() {
-    switch (type) {
+    switch (widget.type) {
       case 'image':
         if (_hasMedia) {
           return EncryptedImageViewer(
-            fileKey: mediaKey!,
-            secretKeyHex: secretKeyHex!,
-            nonceHex: nonceHex!,
-            backendUrl: backendUrl,
+            fileKey: widget.mediaKey!,
+            secretKeyHex: widget.secretKeyHex!,
+            nonceHex: widget.nonceHex!,
+            backendUrl: widget.backendUrl,
           );
         }
         return _mediaPlaceholder(Icons.image_outlined);
@@ -71,25 +141,25 @@ class ChatBubble extends StatelessWidget {
       case 'document':
         if (_hasMedia) {
           return EncryptedDocumentTile(
-            fileName: text.isEmpty ? "document" : text,
-            fileKey: mediaKey!,
-            secretKeyHex: secretKeyHex!,
-            nonceHex: nonceHex!,
-            backendUrl: backendUrl,
-            onLight: isMe,
+            fileName: widget.text.isEmpty ? "document" : widget.text,
+            fileKey: widget.mediaKey!,
+            secretKeyHex: widget.secretKeyHex!,
+            nonceHex: widget.nonceHex!,
+            backendUrl: widget.backendUrl,
+            onLight: widget.isMe,
           );
         }
         return _mediaPlaceholder(Icons.insert_drive_file);
 
       case 'voice':
-        return VoiceNotePlayer(duration: "0:32", isMe: isMe);
+        return VoiceNotePlayer(duration: "0:32", isMe: widget.isMe);
 
       case 'text':
       default:
         return Text(
-          text,
+          widget.text,
           style: TextStyle(
-            color: isMe ? AirColors.bubbleMeText : AirColors.textPrimary,
+            color: widget.isMe ? AirColors.bubbleMeText : AirColors.textPrimary,
             fontSize: 15,
             height: 1.35,
             letterSpacing: -0.1,
@@ -112,86 +182,177 @@ class ChatBubble extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           Flexible(
-            child: Text(text,
+            child: Text(widget.text,
                 style: const TextStyle(
                     color: AirColors.textPrimary, fontSize: 15, height: 1.25)),
           ),
         ],
       );
 
-  @override
-  Widget build(BuildContext context) {
-    final formattedTime = DateFormat('h:mm a').format(
-      DateTime.fromMillisecondsSinceEpoch(timestamp),
-    );
-
-    final isFailed = isMe && status == 'failed';
-
-    // Me = off-white block with black ink (inverted). Peer = dark gray.
-    final bubbleColor = isFailed
-        ? const Color(0xFF2A1515)
-        : (isMe ? AirColors.bubbleMe : AirColors.bubblePeer);
-    final metaColor =
-        isMe ? Colors.black54 : AirColors.textSecondary;
-
-    return Align(
-      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+  /// Quoted original message pinned above the bubble content.
+  Widget _buildQuoteBlock(Color metaColor) {
+    final quoteAuthor = (widget.replyIsMe ?? false) ? 'You' : widget.peerName;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
       child: GestureDetector(
-        onTap: isFailed ? onRetryFailed : null,
+        onTap: widget.onTapQuote,
         child: Container(
-          margin: EdgeInsets.only(
-            top: 3, bottom: 3,
-            left: isMe ? 48 : 12,
-            right: isMe ? 12 : 48,
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.78,
-          ),
+          constraints: const BoxConstraints(maxWidth: double.infinity),
+          padding: const EdgeInsets.fromLTRB(8, 5, 8, 5),
           decoration: BoxDecoration(
-            color: bubbleColor,
-            border: isFailed
-                ? Border.all(color: AirColors.error, width: 1)
-                : (isMe ? null : Border.all(color: AirColors.border)),
-            borderRadius: BorderRadius.circular(isMe ? 18 : 18).copyWith(
-              bottomLeft: isMe ? const Radius.circular(18) : const Radius.circular(4),
-              bottomRight: isMe ? const Radius.circular(4) : const Radius.circular(18),
-            ),
+            color: Colors.black.withOpacity(widget.isMe ? 0.06 : 0.22),
+            borderRadius: BorderRadius.circular(10),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
+          child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (isFailed)
-                const Padding(
-                  padding: EdgeInsets.only(bottom: 4),
-                  child: Text(
-                    "Not delivered — tap to retry",
-                    style: TextStyle(color: AirColors.error, fontSize: 11),
-                  ),
+              Container(
+                width: 3,
+                height: 30,
+                decoration: BoxDecoration(
+                  color: widget.isMe
+                      ? Colors.black45
+                      : AirColors.accent,
+                  borderRadius: BorderRadius.circular(2),
                 ),
-              _buildContent(),
-              const SizedBox(height: 4),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (type != 'text') ...[
-                    Icon(Icons.lock, size: 10, color: metaColor),
-                    const SizedBox(width: 3),
+              ),
+              const SizedBox(width: 7),
+              Flexible(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      quoteAuthor.isEmpty ? 'Message' : quoteAuthor,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: metaColor,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -0.1,
+                      ),
+                    ),
+                    const SizedBox(height: 1),
+                    Text(
+                      _quotePreview,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: metaColor,
+                        fontSize: 12.5,
+                        height: 1.25,
+                      ),
+                    ),
                   ],
-                  Text(
-                    formattedTime,
-                    style: TextStyle(color: metaColor, fontSize: 11),
-                  ),
-                  if (isMe) ...[
-                    const SizedBox(width: 4),
-                    _buildStatusIcon(),
-                  ],
-                ],
+                ),
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final formattedTime = DateFormat('h:mm a').format(
+      DateTime.fromMillisecondsSinceEpoch(widget.timestamp),
+    );
+
+    final isFailed = widget.isMe && widget.status == 'failed';
+
+    // Me = off-white block with black ink (inverted). Peer = dark gray.
+    final bubbleColor = isFailed
+        ? const Color(0xFF2A1515)
+        : (widget.isMe ? AirColors.bubbleMe : AirColors.bubblePeer);
+    final metaColor =
+        widget.isMe ? Colors.black54 : AirColors.textSecondary;
+
+    final bubble = AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
+      margin: EdgeInsets.only(
+        top: 3, bottom: 3,
+        left: widget.isMe ? 48 : 12,
+        right: widget.isMe ? 12 : 48,
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.of(context).size.width * 0.78,
+      ),
+      decoration: BoxDecoration(
+        color: bubbleColor,
+        border: Border.all(
+          color: widget.highlighted
+              ? AirColors.accent
+              : (isFailed ? AirColors.error : (widget.isMe ? Colors.transparent : AirColors.border)),
+          width: widget.highlighted || isFailed ? 1.4 : 1,
+        ),
+        borderRadius: BorderRadius.circular(widget.isMe ? 18 : 18).copyWith(
+          bottomLeft: widget.isMe ? const Radius.circular(18) : const Radius.circular(4),
+          bottomRight: widget.isMe ? const Radius.circular(4) : const Radius.circular(18),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isFailed)
+            const Padding(
+              padding: EdgeInsets.only(bottom: 4),
+              child: Text(
+                "Not delivered — tap to retry",
+                style: TextStyle(color: AirColors.error, fontSize: 11),
+              ),
+            ),
+          if (_hasReply) _buildQuoteBlock(metaColor),
+          _buildContent(),
+          const SizedBox(height: 4),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (widget.type != 'text') ...[
+                Icon(Icons.lock, size: 10, color: metaColor),
+                const SizedBox(width: 3),
+              ],
+              Text(
+                formattedTime,
+                style: TextStyle(color: metaColor, fontSize: 11),
+              ),
+              if (widget.isMe) ...[
+                const SizedBox(width: 4),
+                _buildStatusIcon(),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+
+    return Align(
+      alignment: widget.isMe ? Alignment.centerRight : Alignment.centerLeft,
+      child: Stack(
+        alignment: widget.isMe ? Alignment.centerLeft : Alignment.centerRight,
+        children: [
+          // Reply arrow revealed behind the bubble while swiping right.
+          Opacity(
+            opacity: (_dragDx / _swipeThreshold).clamp(0.0, 1.0),
+            child: Transform.scale(
+              scale: 0.7 + 0.3 * (_dragDx / _swipeThreshold).clamp(0.0, 1.0),
+              child: const Icon(Icons.reply,
+                  size: 22, color: AirColors.textFaint),
+            ),
+          ),
+          GestureDetector(
+            onTap:
+                isFailed ? widget.onRetryFailed : null,
+            onHorizontalDragUpdate: _onDragUpdate,
+            onHorizontalDragEnd: _onDragEnd,
+            child: Transform.translate(
+              offset: Offset(_dragDx * 0.55, 0),
+              child: bubble,
+            ),
+          ),
+        ],
       ),
     );
   }

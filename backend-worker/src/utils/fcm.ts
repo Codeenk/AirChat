@@ -96,11 +96,15 @@ export async function getFcmAccessToken(serviceAccountJson: string): Promise<str
   return data.access_token;
 }
 
-// Sends a silent (data-only) wake-up push. Contains zero message content.
+// Sends a silent (data-only) wake-up push. Contains zero message content —
+// only the sender's uid and public display name (directory metadata) so the
+// client can render the notification instantly without any DB/network work
+// in the cold-start background isolate.
 export async function sendSilentWake(
   env: { FCM_SERVICE_ACCOUNT_JSON?: string; FCM_PROJECT_ID?: string },
   fcmToken: string,
   senderUid: string,
+  senderName?: string,
 ): Promise<boolean> {
   if (!env.FCM_SERVICE_ACCOUNT_JSON || !env.FCM_PROJECT_ID) {
     return false; // Push not configured; queued messages still deliver on next app open
@@ -123,6 +127,7 @@ export async function sendSilentWake(
             data: {
               type: "wake",
               senderUid,
+              ...(senderName ? { senderName } : {}),
             },
             android: { priority: "HIGH" },
             apns: {
