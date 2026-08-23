@@ -1,0 +1,50 @@
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- IDE ---
+.idea/
+*.iml
+.vscode/
+
+# --- Flutter / Dart (app) ---
+frontend-flutter/.dart_tool/
+frontend-flutter/.flutter-plugins
+frontend-flutter/.flutter-plugins-dependencies
+frontend-flutter/.packages
+frontend-flutter/.pub-cache/
+frontend-flutter/.pub/
+frontend-flutter/build/
+frontend-flutter/pubspec.lock
+
+# Android
+frontend-flutter/android/.gradle/
+frontend-flutter/android/local.properties
+frontend-flutter/android/key.properties
+frontend-flutter/android/app/*.keystore
+frontend-flutter/android/app/*.jks
+frontend-flutter/**/GeneratedPluginRegistrant.*
+frontend-flutter/ios/Flutter/.last_build_id
+
+# Secrets & platform configs — never commit
+frontend-flutter/android/app/google-services.json
+frontend-flutter/lib/firebase_options*.dart
+*.env
+
+# --- Backend worker ---
+backend-worker/node_modules/
+backend-worker/.wrangler/
+backend-worker/.dev.vars
+backend-worker/dist/
+
+# --- Build artifacts ---
+*.apk
+*.aab
+*.ipa
+
+# --- Logs ---
+*.log
+
+# --- Dart tooling (root) ---
+.dart_tool/
+.dart-tool/

@@ -1,0 +1,27 @@
+name = "airchat-relay"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+# Secrets (set via: wrangler secret put <NAME>)
+# FCM_SERVICE_ACCOUNT_JSON - Full Firebase service-account JSON (for FCM HTTP v1 API)
+# FCM_PROJECT_ID            - Firebase project ID
+
+[durable_objects]
+bindings = [
+  { name = "RELAY_DO", class_name = "ConnectionRelay" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ConnectionRelay"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "airchat-identity"
+database_id = "a6964990-4ca6-4701-b120-f9c601e81e2d"
+
+# Ephemeral encrypted media via Workers KV (no payment info required).
+# Native expirationTtl=24h makes blobs self-destruct; no cleanup job needed.
+[[kv_namespaces]]
+binding = "MEDIA_KV"
+id = "0e7bf0274c6d4acd843cdd008e9fde49"
