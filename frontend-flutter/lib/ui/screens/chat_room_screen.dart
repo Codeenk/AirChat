@@ -167,7 +167,6 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
       final file = files.isNotEmpty ? files.single : null;
       if (file == null) return;
       final bytes = await file.readAsBytes();
-      if (bytes == null) return;
       await _sendEncryptedMedia(
         bytes: bytes,
         fileName: file.name,
