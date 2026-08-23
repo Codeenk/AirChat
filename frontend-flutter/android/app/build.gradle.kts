@@ -7,9 +7,9 @@ plugins {
 
 android {
     namespace = "com.airchat.air_chat"
-    // Pinned (not flutter.compileSdkVersion): newer plugin versions
-    // (flutter_plugin_android_lifecycle) require compiling against SDK 36.
-    compileSdk = 36
+    // Latest plugins (flutter_secure_storage 11, permission_handler 14)
+    // ship AAR metadata requiring SDK 37.
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
