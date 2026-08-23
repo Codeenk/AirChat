@@ -163,10 +163,10 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
 
   Future<void> _pickAndSendDocument() async {
     try {
-      final result = await FilePicker.platform.pickFiles(withData: true);
-      final file = result?.files.single;
+      final files = await FilePicker.pickFiles();
+      final file = files.isNotEmpty ? files.single : null;
       if (file == null) return;
-      final bytes = file.bytes;
+      final bytes = await file.readAsBytes();
       if (bytes == null) return;
       await _sendEncryptedMedia(
         bytes: bytes,

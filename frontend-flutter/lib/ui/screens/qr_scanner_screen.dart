@@ -261,7 +261,7 @@ class _QrScannerScreenState extends State<QrScannerScreen>
             controller: controller,
             onDetect: _onDetect,
             fit: BoxFit.cover,
-            errorBuilder: (context, error, child) {
+            errorBuilder: (context, error) {
               return _buildScannerError(error);
             },
           )
