@@ -1,5 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' show Random;
+
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 enum TunnelState { disconnected, connecting, connected }
@@ -21,6 +24,7 @@ class WebSocketTunnelClient {
   Timer? _reconnectTimer;
   int _backoffSeconds = 3;
   bool _disposed = false;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
 
   /// Packets composed while offline; flushed automatically on reconnect.
   final List<Map<String, dynamic>> _outboundQueue = [];
@@ -35,10 +39,32 @@ class WebSocketTunnelClient {
   TunnelState get currentState => _state;
   int get queuedPacketCount => _outboundQueue.length;
 
+  /// Pure, unit-testable backoff calculation: doubles until 30s, then applies
+  /// ±20% jitter so many clients don't thunder-herd on the relay.
+  static int nextBackoffSeconds(int current) {
+    final doubled = (current * 2).clamp(3, 30);
+    final jitter = (doubled * 0.2 * (Random().nextDouble() * 2 - 1)).round();
+    return (doubled + jitter).clamp(3, 30);
+  }
+
   WebSocketTunnelClient({
     this.baseWsUrl = "wss://airchat-relay.malandkar-sarvesh1.workers.dev",
     required this.uid,
-  });
+  }) {
+    _connectivitySub = Connectivity()
+        .onConnectivityChanged
+        .listen((results) {
+      final hasNet = results.any((r) =>
+          r == ConnectivityResult.mobile ||
+          r == ConnectivityResult.wifi ||
+          r == ConnectivityResult.ethernet ||
+          r == ConnectivityResult.vpn);
+      if (hasNet && _state == TunnelState.disconnected && !_disposed) {
+        _backoffSeconds = 3;
+        connect();
+      }
+    });
+  }
 
   void connect() {
     if (_disposed) return;
@@ -146,6 +172,17 @@ class WebSocketTunnelClient {
     }));
   }
 
+  /// Best-effort read receipt: tells the original sender their message
+  /// was seen. Only sent while the tunnel is connected.
+  void sendReadReceipt({required String packetId, required String senderUid}) {
+    if (_state != TunnelState.connected) return;
+    _channel?.sink.add(jsonEncode({
+      'action': 'read_receipt',
+      'packetId': packetId,
+      'senderUid': senderUid,
+    }));
+  }
+
   void _flushOutboundQueue() {
     if (_outboundQueue.isEmpty) return;
     for (final packet in _outboundQueue) {
@@ -164,10 +201,11 @@ class WebSocketTunnelClient {
     } catch (_) {}
     _channel = null;
 
-    // Exponential backoff: 3s -> 6s -> 12s -> 24s (cap 30s)
+    // Exponential backoff: 3s -> 6s -> 12s -> 24s (cap 30s) with jitter
     _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(Duration(seconds: _backoffSeconds), () {
-      _backoffSeconds = (_backoffSeconds * 2).clamp(3, 30);
+    final delay = Duration(seconds: _backoffSeconds);
+    _reconnectTimer = Timer(delay, () {
+      _backoffSeconds = nextBackoffSeconds(_backoffSeconds);
       connect();
     });
   }
@@ -182,6 +220,7 @@ class WebSocketTunnelClient {
 
   void dispose() {
     _disposed = true;
+    _connectivitySub?.cancel();
     _pingTimer?.cancel();
     _reconnectTimer?.cancel();
     _channel?.sink.close();

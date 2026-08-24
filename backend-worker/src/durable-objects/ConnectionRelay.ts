@@ -98,6 +98,17 @@ export class ConnectionRelay {
             senderWs.send(JSON.stringify({ type: "delivery_receipt", packetId, status: "delivered" }));
           }
         }
+
+        if (data.action === "read_receipt") {
+          const { packetId, senderUid } = data;
+          if (!packetId || !senderUid) return;
+
+          // Best-effort: notify the original sender that their message was read.
+          const senderWs = this.sockets.get(senderUid);
+          if (senderWs && senderWs.readyState === WebSocket.READY_STATE_OPEN) {
+            senderWs.send(JSON.stringify({ type: "read_receipt", packetId }));
+          }
+        }
       } catch (err) {
         ws.send(JSON.stringify({ type: "error", message: "Malformed packet" }));
       }

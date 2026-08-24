@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import '../../core/crypto/key_store.dart';
+import '../../core/database/daos/chat_dao.dart';
 import '../../core/database/daos/contact_dao.dart';
 import '../../core/network/api_client.dart';
 import '../../core/theme/colors.dart';
@@ -169,11 +171,37 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
       ),
       subtitle: Padding(
         padding: const EdgeInsets.only(top: 4.0),
-        child: Text(
-          thread.lastMessage,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(color: AirColors.textSecondary, fontSize: 14),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                thread.lastMessage,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: AirColors.textSecondary, fontSize: 14),
+              ),
+            ),
+            if (thread.unreadCount > 0) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AirColors.accent,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                constraints: const BoxConstraints(minWidth: 22),
+                alignment: Alignment.center,
+                child: Text(
+                  thread.unreadCount > 99 ? '99+' : '${thread.unreadCount}',
+                  style: const TextStyle(
+                    color: AirColors.background,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ],
         ),
       ),
       onTap: () async {
@@ -218,7 +246,13 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
               contactPublicKey: resolved.identityPublicKey,
             ),
           ),
-        );
+        ).then((_) async {
+          // Opening the chat clears its unread badge.
+          final myUid = await KeyStore.getUid();
+          if (myUid != null) {
+            await ChatDao().resetUnread(buildChatId(myUid, thread.contactUid));
+          }
+        });
       },
     );
   }

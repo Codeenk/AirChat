@@ -31,10 +31,43 @@ class ChatDao {
     return maps.map((m) => ChatThread.fromMap(m)).toList();
   }
 
+  /// Upsert that refreshes only the preview fields, preserving unread_count.
+  /// (A blind REPLACE would reset the badge to 0 on every incoming message.)
+  Future<void> updatePreviewPreservingUnread(ChatThread chat) async {
+    final db = await AppDatabase.instance;
+    await db.rawInsert('''
+      INSERT INTO chat_threads (id, contact_uid, last_message, last_message_time, unread_count)
+      VALUES (?, ?, ?, ?, 0)
+      ON CONFLICT(id) DO UPDATE SET
+        last_message = excluded.last_message,
+        last_message_time = excluded.last_message_time
+    ''', [chat.id, chat.contactUid, chat.lastMessage, chat.lastMessageTime]);
+  }
+
   Future<ChatThread?> getChatById(String chatId) async {
     final db = await AppDatabase.instance;
     final maps = await db.query('chat_threads', where: 'id = ?', whereArgs: [chatId]);
     if (maps.isNotEmpty) return ChatThread.fromMap(maps.first);
     return null;
+  }
+
+  /// Bump the unread badge for this chat (incoming message while not open).
+  Future<void> incrementUnread(String chatId) async {
+    final db = await AppDatabase.instance;
+    await db.rawUpdate(
+      'UPDATE chat_threads SET unread_count = unread_count + 1 WHERE id = ?',
+      [chatId],
+    );
+  }
+
+  /// Clear the unread badge (chat opened).
+  Future<void> resetUnread(String chatId) async {
+    final db = await AppDatabase.instance;
+    await db.update(
+      'chat_threads',
+      {'unread_count': 0},
+      where: 'id = ?',
+      whereArgs: [chatId],
+    );
   }
 }

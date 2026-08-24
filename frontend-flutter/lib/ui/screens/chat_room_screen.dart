@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,6 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../../core/crypto/key_store.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/media_uploader.dart';
+import '../../core/network/notification_service.dart';
 import '../../core/network/websocket_client.dart';
 import '../../core/theme/colors.dart';
 import '../../models/message_payload.dart';
@@ -15,6 +17,7 @@ import '../../state/chat_provider.dart';
 import '../../state/connection_provider.dart';
 import '../widgets/attachment_bottom_sheet.dart';
 import '../widgets/chat_bubble.dart';
+import '../widgets/voice_note_recorder.dart';
 
 class ChatRoomScreen extends ConsumerStatefulWidget {
   final String contactName;
@@ -44,8 +47,13 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   @override
   void initState() {
     super.initState();
+    _textController.addListener(_onTextChanged);
     _initAsync();
     _scrollController.addListener(_onScroll);
+  }
+
+  void _onTextChanged() {
+    if (mounted) setState(() {}); // swap mic <-> send button live
   }
 
   @override
@@ -54,17 +62,45 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _textController.dispose();
+    MessageRouter.openChatId = null;
     super.dispose();
   }
 
   static const int _maxMessageKeys = 200;
 
+  bool _showFab = false;
+
   void _onScroll() {
-    if (_scrollController.position.pixels < 200) {
+    if (!_scrollController.hasClients) return;
+    final nearBottom = _scrollController.position.maxScrollExtent -
+            _scrollController.position.pixels <
+        400;
+    if (nearBottom != !_showFab) {
+      // invert: show when NOT near bottom
+      if (mounted) setState(() => _showFab = !nearBottom);
+    }
+    if (_scrollController.position.pixels < 200 && _myUid != null) {
       final chatId = buildChatId(_myUid!, widget.contactUid);
       ref.read(activeChatMessagesProvider(chatId).notifier).loadMore();
     }
     _evictStaleKeys();
+  }
+
+  String _dateLabel(int ms) {
+    final d = DateTime.fromMillisecondsSinceEpoch(ms);
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final that = DateTime(d.year, d.month, d.day);
+    final diff = today.difference(that).inDays;
+    if (diff == 0) return 'Today';
+    if (diff == 1) return 'Yesterday';
+    return '${d.day}/${d.month}/${d.year}';
+  }
+
+  bool _isSameDay(int a, int b) {
+    final da = DateTime.fromMillisecondsSinceEpoch(a);
+    final db = DateTime.fromMillisecondsSinceEpoch(b);
+    return da.year == db.year && da.month == db.month && da.day == db.day;
   }
 
   /// Cap GlobalKey map at 200 entries to prevent unbounded memory growth.
@@ -85,6 +121,13 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     final uid = await KeyStore.getUid();
     if (uid != null) {
       setState(() => _myUid = uid);
+      final chatId = buildChatId(uid, widget.contactUid);
+      MessageRouter.openChatId = chatId;
+      await NotificationService.instance.cancelForChat(widget.contactUid);
+      // Existing delivered messages become read once this chat is open.
+      await ref
+          .read(activeChatMessagesProvider(chatId).notifier)
+          .markIncomingAsRead();
     }
   }
 
@@ -192,6 +235,21 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     } finally {
       _isMediaBusy = false;
     }
+  }
+
+  /// Encrypt + upload a recorded voice note. Duration label rides in the
+  /// encrypted text field so the recipient's player shows the right length.
+  Future<void> _sendVoiceNote(String path, Duration duration) async {
+    try {
+      final bytes = await File(path).readAsBytes();
+      final m = duration.inMinutes.remainder(60).toString();
+      final s = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
+      await _sendEncryptedMedia(
+        bytes: bytes,
+        fileName: '$m:$s',
+        messageType: 'voice',
+      );
+    } catch (_) {}
   }
 
   Future<bool> _ensurePermission(Permission permission, String deniedMsg) async {
@@ -313,6 +371,10 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     ref.listen(activeChatMessagesProvider(chatId), (prev, next) {
       if (next.length > (prev?.length ?? 0)) {
         _scrollToBottom();
+        // Chat is open → new incoming messages are instantly read.
+        ref
+            .read(activeChatMessagesProvider(chatId).notifier)
+            .markIncomingAsRead();
       }
     });
 
@@ -340,6 +402,14 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
           ],
         ),
       ),
+      floatingActionButton: _showFab
+          ? FloatingActionButton.small(
+              backgroundColor: AirColors.surfaceElevated,
+              foregroundColor: AirColors.textPrimary,
+              onPressed: _scrollToBottom,
+              child: const Icon(Icons.arrow_downward, size: 18),
+            )
+          : null,
       body: Column(
         children: [
           Expanded(
@@ -369,43 +439,66 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                     itemCount: messages.length,
                     itemBuilder: (context, index) {
                       final msg = messages[index];
+                      final showDateDivider = index == 0 ||
+                          !_isSameDay(messages[index - 1].timestamp, msg.timestamp);
                       final msgKey = _messageKeys.putIfAbsent(
                           msg.id, () => GlobalKey());
-                      return Container(
-                        key: ValueKey('slot_${msg.id}'),
-                        child: ChatBubble(
-                          key: msgKey,
-                          text: msg.text,
-                          isMe: msg.isMe,
-                          timestamp: msg.timestamp,
-                          status: msg.status,
-                          type: msg.type,
-                          mediaKey: msg.mediaKey,
-                          secretKeyHex: msg.secretKeyHex,
-                          nonceHex: msg.nonceHex,
-                          backendUrl: ApiClient.defaultBaseUrl,
-                          peerName: widget.contactName,
-                          replyToId: msg.replyToId,
-                          replyText: msg.replyText,
-                          replyType: msg.replyType,
-                          replyIsMe: msg.replyIsMe,
-                          highlighted:
-                              _highlightedMessageId == msg.id,
-                          onSwipeReply: () => _startReply(msg),
-                          onTapQuote: msg.hasReply
-                              ? () => _jumpToMessage(msg.replyToId!)
-                              : null,
-                          onRetryFailed: msg.isMe && msg.status == 'failed'
-                              ? () => ref
-                                  .read(activeChatMessagesProvider(chatId)
-                                      .notifier)
-                                  .resendMessage(
-                                    msg,
-                                    recipientPublicKeyBase64:
-                                        widget.contactPublicKey,
-                                  )
-                              : null,
-                        ),
+                      return Column(
+                        children: [
+                          if (showDateDivider)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: AirColors.surfaceLight,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Text(
+                                  _dateLabel(msg.timestamp),
+                                  style: const TextStyle(
+                                      color: AirColors.textSecondary, fontSize: 11),
+                                ),
+                              ),
+                            ),
+                          Container(
+                            key: ValueKey('slot_${msg.id}'),
+                            child: ChatBubble(
+                              key: msgKey,
+                              text: msg.text,
+                              isMe: msg.isMe,
+                              timestamp: msg.timestamp,
+                              status: msg.status,
+                              type: msg.type,
+                              mediaKey: msg.mediaKey,
+                              secretKeyHex: msg.secretKeyHex,
+                              nonceHex: msg.nonceHex,
+                              backendUrl: ApiClient.defaultBaseUrl,
+                              peerName: widget.contactName,
+                              replyToId: msg.replyToId,
+                              replyText: msg.replyText,
+                              replyType: msg.replyType,
+                              replyIsMe: msg.replyIsMe,
+                              highlighted:
+                                  _highlightedMessageId == msg.id,
+                              onSwipeReply: () => _startReply(msg),
+                              onTapQuote: msg.hasReply
+                                  ? () => _jumpToMessage(msg.replyToId!)
+                                  : null,
+                              onRetryFailed: msg.isMe && msg.status == 'failed'
+                                  ? () => ref
+                                      .read(activeChatMessagesProvider(chatId)
+                                          .notifier)
+                                      .resendMessage(
+                                        msg,
+                                        recipientPublicKeyBase64:
+                                            widget.contactPublicKey,
+                                      )
+                                  : null,
+                            ),
+                          ),
+                        ],
                       );
                     },
                   ),
@@ -434,10 +527,14 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
         top: false,
         child: Row(
           children: [
-            IconButton(
-              icon: const Icon(Icons.add_circle_outline,
-                  color: AirColors.textSecondary, size: 26),
-              onPressed: _openAttachmentSheet,
+            Semantics(
+              label: 'Attach media',
+              button: true,
+              child: IconButton(
+                icon: const Icon(Icons.add_circle_outline,
+                    color: AirColors.textSecondary, size: 26),
+                onPressed: _openAttachmentSheet,
+              ),
             ),
             Expanded(
               child: TextField(
@@ -460,19 +557,31 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
               ),
             ),
             const SizedBox(width: 8),
-            GestureDetector(
-              onTap: _sendMessage,
-              child: Container(
-                width: 42,
-                height: 42,
-                decoration: const BoxDecoration(
-                  color: AirColors.bubbleMe,
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(Icons.arrow_upward,
-                    color: AirColors.bubbleMeText, size: 20),
-              ),
-            ),
+            // Mic when the field is empty, send arrow otherwise.
+            _textController.text.isEmpty
+                ? VoiceNoteRecorder(
+                    onComplete: (recording) =>
+                        _sendVoiceNote(recording.path, recording.duration),
+                    onPermissionDenied: () {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content:
+                            Text("Microphone access is disabled. Enable it in Settings."),
+                      ));
+                    },
+                  )
+                : GestureDetector(
+                    onTap: _sendMessage,
+                    child: Container(
+                      width: 42,
+                      height: 42,
+                      decoration: const BoxDecoration(
+                        color: AirColors.bubbleMe,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.arrow_upward,
+                          color: AirColors.bubbleMeText, size: 20),
+                    ),
+                  ),
           ],
         ),
       ),

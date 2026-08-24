@@ -1,46 +1,67 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
+import 'core/crash/crash_reporter.dart';
 import 'core/crypto/key_store.dart';
-import 'core/crypto/sodium_engine.dart';
 import 'core/crypto/signing_engine.dart';
+import 'core/crypto/sodium_engine.dart';
+import 'core/database/daos/contact_dao.dart';
+import 'core/database/daos/message_dao.dart';
 import 'core/network/api_client.dart';
 import 'core/network/notification_service.dart';
+import 'core/network/websocket_client.dart';
 import 'core/theme/colors.dart';
 import 'state/connection_provider.dart';
 import 'ui/screens/home_chat_list_screen.dart';
 
 void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+  await runZonedGuarded<Future<void>>(() async {
+    WidgetsFlutterBinding.ensureInitialized();
 
-  final container = ProviderContainer();
+    FlutterError.onError = (details) {
+      FlutterError.presentError(details);
+      CrashReporter.recordError(
+        error: details.exception,
+        stackTrace: details.stack,
+        source: 'flutter',
+      );
+    };
+    PlatformDispatcher.instance.onError = (error, stack) {
+      CrashReporter.recordError(error: error, stackTrace: stack, source: 'platform');
+      return true;
+    };
 
-  // Phase 1 (blocking, but fast — local secure-storage reads only):
-  // load or create the local identity, then paint the UI immediately.
-  final uid = await _loadLocalIdentity(container);
+    await CrashReporter.initialize();
 
-  runApp(
-    ProviderScope(
-      parent: container,
-      child: const AirChatApp(),
-    ),
-  );
+    final container = ProviderContainer();
 
-  // Phase 2 (deferred): everything that touches the network or platform
-  // plugins runs after the first frame, so it never delays app start-up.
-  unawaited(_initializeServices(container, uid));
+    final uid = await _loadLocalIdentity(container);
+
+    runApp(
+      ProviderScope(
+        parent: container,
+        child: const AirChatApp(),
+      ),
+    );
+
+    unawaited(
+      _initializeServices(container, uid).catchError((e, s) {
+        CrashReporter.recordError(error: e, stackTrace: s, source: 'startup-services');
+      }),
+    );
+  }, (error, stack) {
+    CrashReporter.recordError(error: error, stackTrace: stack, source: 'zone');
+  });
 }
 
-/// Loads the local identity without any network or plugin-heavy work.
 Future<String> _loadLocalIdentity(ProviderContainer container) async {
   final uid = await KeyStore.getUid();
 
   if (uid == null || uid.isEmpty) {
-    // First launch: generate keys locally (fast, offline). Server
-    // registration happens in the deferred phase below.
     final engine = SodiumEngine();
     final keyPair = await engine.generateIdentityKeyPair();
 
@@ -76,8 +97,6 @@ Future<String> _loadLocalIdentity(ProviderContainer container) async {
   return uid;
 }
 
-/// Deferred start-up: server re-registration (self-healing), Firebase/push
-/// wiring and the WebSocket message router. Failures here never block the UI.
 Future<void> _initializeServices(
     ProviderContainer container, String uid) async {
   if (uid.isEmpty) return;
@@ -86,18 +105,14 @@ Future<void> _initializeServices(
     await container.read(firebaseInitializerProvider.future);
     final pushService = container.read(pushServiceProvider);
     await pushService.initialize();
-  } catch (_) {
-    // Push unavailable (missing platform config) — messaging still works online
-  }
+  } catch (_) {}
 
   container.read(messageRouterProvider(uid));
 
-  // ALWAYS (re)register on launch — server does an upsert, so this heals
-  // identities whose initial registration silently failed. Without this,
-  // peers' directory lookups for us return 404 and auto-contact breaks.
+  unawaited(Future.delayed(const Duration(seconds: 2), () => _requeuePending(container, uid)));
+
   try {
     final pubKey = await KeyStore.getPublicKey() ?? '';
-    debugPrint('[AirChat] identity uid=$uid pubKeyLen=${pubKey.length}');
     if (pubKey.isNotEmpty) {
       final client = const ApiClient();
       for (int attempt = 1; attempt <= 3; attempt++) {
@@ -108,26 +123,50 @@ Future<void> _initializeServices(
           signingPublicKey: await KeyStore.getSigningPublicKey(),
           signingSignature: await KeyStore.getSigningSignature(),
         );
-        debugPrint('[AirChat] register attempt $attempt -> $ok');
         if (ok) break;
         await Future.delayed(Duration(seconds: 2 * attempt));
       }
-    } else {
-      debugPrint('[AirChat] WARNING: identity has empty public key!');
     }
-  } catch (_) {
-    // Offline — queued messages still deliver on reconnect
-  }
+  } catch (_) {}
 }
 
-class AirChatApp extends StatefulWidget {
+Future<void> _requeuePending(ProviderContainer container, String uid) async {
+  try {
+    final pending = await MessageDao().getPendingMessages();
+    if (pending.isEmpty) return;
+    final keyPair = await KeyStore.getKeyPair();
+    if (keyPair == null) return;
+    final engine = SodiumEngine();
+    for (final msg in pending) {
+      final contact = await ContactDao().getContactByUid(msg.recipientUid);
+      final pubKey = contact?.identityPublicKey;
+      if (pubKey == null || pubKey.isEmpty) continue;
+      try {
+        final recipientPub = await engine.importPublicKey(pubKey);
+        final payload = await engine.encryptMessage(
+          plainText: jsonEncode({'text': msg.text, 'type': msg.type}),
+          recipientPublicKey: recipientPub,
+          senderKeyPair: keyPair,
+        );
+        final ws = container.read(websocketClientProvider(uid));
+        ws.sendPacket(
+          recipientUid: msg.recipientUid,
+          encryptedPayload: payload.encode(),
+          packetId: msg.id,
+        );
+      } catch (_) {}
+    }
+  } catch (_) {}
+}
+
+class AirChatApp extends ConsumerStatefulWidget {
   const AirChatApp({Key? key}) : super(key: key);
 
   @override
-  State<AirChatApp> createState() => _AirChatAppState();
+  ConsumerState<AirChatApp> createState() => _AirChatAppState();
 }
 
-class _AirChatAppState extends State<AirChatApp> with WidgetsBindingObserver {
+class _AirChatAppState extends ConsumerState<AirChatApp> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
@@ -143,10 +182,9 @@ class _AirChatAppState extends State<AirChatApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Notifications are only shown when the UI is not visible.
     NotificationService.isAppForeground = state == AppLifecycleState.resumed;
     if (state == AppLifecycleState.resumed) {
-      FlutterLocalNotificationsPlugin().cancelAll();
+      NotificationService.instance.clearAll();
     }
   }
 
@@ -197,7 +235,54 @@ class _AirChatAppState extends State<AirChatApp> with WidgetsBindingObserver {
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         ),
       ),
+      builder: (context, child) => Stack(
+        children: [
+          child ?? const SizedBox.shrink(),
+          const _ReconnectBanner(),
+        ],
+      ),
       home: const HomeChatListScreen(),
+    );
+  }
+}
+
+class _ReconnectBanner extends ConsumerWidget {
+  const _ReconnectBanner();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final uid = ref.watch(currentUidProvider);
+    if (uid.isEmpty) return const SizedBox.shrink();
+    final asyncState = ref.watch(tunnelStateProvider(uid));
+    final state = asyncState.asData?.value ?? TunnelState.connecting;
+    if (state == TunnelState.connected) return const SizedBox.shrink();
+    return Positioned(
+      top: MediaQuery.of(context).padding.top,
+      left: 0,
+      right: 0,
+      child: Material(
+        color: AirColors.surfaceElevated,
+        elevation: 2,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(
+                    strokeWidth: 1.6, color: AirColors.textSecondary),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                state == TunnelState.connecting ? 'Connecting…' : 'Reconnecting…',
+                style: const TextStyle(color: AirColors.textSecondary, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

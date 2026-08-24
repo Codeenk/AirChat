@@ -64,19 +64,13 @@ Future<void> _showWakeNotification(RemoteMessage message) async {
   // Fast path: the wake payload carries the sender's public display name,
   // so a killed app can render instantly — no DB open, no network call.
   final serverName = (data['senderName'] as String?)?.trim();
-  if (serverName != null && serverName.isNotEmpty) {
-    await NotificationService.instance.showMessageNotification(
-      title: serverName,
-      body: 'You have a new message',
-    );
-    return;
-  }
-
-  // Slow fallback: resolve the name locally / via directory.
-  final name = await _resolveSenderName(data['senderUid'] as String?);
+  final name = (serverName != null && serverName.isNotEmpty)
+      ? serverName
+      : await _resolveSenderName(data['senderUid'] as String?);
   await NotificationService.instance.showMessageNotification(
     title: name,
     body: 'You have a new message',
+    senderUid: data['senderUid'] as String?,
   );
 }
 

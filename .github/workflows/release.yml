@@ -64,16 +64,28 @@ jobs:
           flutter analyze --no-pub --no-fatal-infos
           flutter test --no-pub
 
-      - name: Build release APK
+      - name: Build release APKs (split-per-abi + obfuscated)
         working-directory: frontend-flutter
-        run: flutter build apk --release
+        run: |
+          flutter build apk --release --split-per-abi \
+            --obfuscate --split-debug-info=build/symbols
 
       - name: Stage artifacts
         run: |
           mkdir -p dist
-          cp frontend-flutter/build/app/outputs/flutter-apk/app-release.apk \
-             dist/AirChat-${{ steps.version.outputs.tag }}-android.apk
+          cp frontend-flutter/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+             dist/AirChat-${{ steps.version.outputs.tag }}-android-arm64.apk
+          cp frontend-flutter/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk \
+             dist/AirChat-${{ steps.version.outputs.tag }}-android-arm32.apk
           sha256sum dist/*.apk > dist/SHA256SUMS.txt
+          ls -lh dist/
+
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-symbols-${{ steps.version.outputs.tag }}
+          path: frontend-flutter/build/symbols/
+          retention-days: 90
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

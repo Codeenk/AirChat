@@ -68,6 +68,11 @@ class MessageRouter {
   final ChatDao chatDao;
   final ContactDao contactDao;
   final RefreshBus bus;
+
+  /// Chat screen the user currently has open (null = home/none). Used to
+  /// decide whether incoming messages can be marked as read immediately.
+  static String? openChatId;
+
   bool _started = false;
 
   MessageRouter({
@@ -103,6 +108,16 @@ class MessageRouter {
             type: 'status',
             messageId: packetId,
             status: status,
+          ));
+        }
+      } else if (type == 'read_receipt') {
+        final packetId = msg['packetId'] as String?;
+        if (packetId != null) {
+          messageDao.updateMessageStatus(packetId, 'read');
+          bus.fire(RefreshEvent(
+            type: 'status',
+            messageId: packetId,
+            status: 'read',
           ));
         }
       } else if (type == 'delivery_receipt') {
@@ -180,22 +195,34 @@ class MessageRouter {
       );
 
       await messageDao.insertMessage(message);
-      await chatDao.insertOrUpdateChat(ChatThread(
+      final chatOpen = MessageRouter.openChatId == chatId;
+      await chatDao.updatePreviewPreservingUnread(ChatThread(
         id: chatId,
         contactUid: senderUid,
         lastMessage: text.isEmpty ? '📎 $messageType' : text,
         lastMessageTime: timestamp,
       ));
 
+      // Unread badge: only count messages that arrived outside the open chat.
+      if (!chatOpen) {
+        await chatDao.incrementUnread(chatId);
+      }
+
       // Notify live UI surfaces (open chat, home list) instantly
       bus.fire(RefreshEvent(type: 'messages', chatId: chatId));
 
-      // Background/terminated: surface a visible local notification with the
-      // sender's display name and a message preview.
+      // Chat is open & visible → the user has effectively read it already.
+      // Send a read receipt so the sender's ticks advance honestly.
+      if (NotificationService.isAppForeground && MessageRouter.openChatId == chatId) {
+        client.sendReadReceipt(packetId: packetId, senderUid: senderUid);
+      }
+
+      // Background/terminated: stacked per-sender notification (MessagingStyle).
       if (!NotificationService.isAppForeground) {
         await NotificationService.instance.showMessageNotification(
           title: contactName,
           body: text.isEmpty ? '📎 $messageType' : text,
+          senderUid: senderUid,
         );
       }
 

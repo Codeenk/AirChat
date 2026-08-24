@@ -63,6 +63,7 @@ class _ChatBubbleState extends State<ChatBubble> {
   static const double _swipeThreshold = 64;
   double _dragDx = 0;
   bool _firedHaptic = false;
+  bool _expanded = false;
 
   bool get _hasMedia =>
       widget.mediaKey != null &&
@@ -152,18 +153,57 @@ class _ChatBubbleState extends State<ChatBubble> {
         return _mediaPlaceholder(Icons.insert_drive_file);
 
       case 'voice':
-        return VoiceNotePlayer(duration: "0:32", isMe: widget.isMe);
+        return VoiceNotePlayer(
+          duration:
+              widget.text.isEmpty ? '0:00' : widget.text,
+          mediaKey: widget.mediaKey,
+          secretKeyHex: widget.secretKeyHex,
+          nonceHex: widget.nonceHex,
+          backendUrl: widget.backendUrl,
+          isMe: widget.isMe,
+        );
 
       case 'text':
       default:
-        return Text(
-          widget.text,
-          style: TextStyle(
-            color: widget.isMe ? AirColors.bubbleMeText : AirColors.textPrimary,
-            fontSize: 15,
-            height: 1.35,
-            letterSpacing: -0.1,
-          ),
+        final isLong = widget.text.length > 400 || '\n'.allMatches(widget.text).length > 7;
+        if (!isLong) {
+          return Text(
+            widget.text,
+            style: TextStyle(
+              color: widget.isMe ? AirColors.bubbleMeText : AirColors.textPrimary,
+              fontSize: 15,
+              height: 1.35,
+              letterSpacing: -0.1,
+            ),
+          );
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.text,
+              maxLines: _expanded ? null : 6,
+              overflow: _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
+              style: TextStyle(
+                color: widget.isMe ? AirColors.bubbleMeText : AirColors.textPrimary,
+                fontSize: 15,
+                height: 1.35,
+                letterSpacing: -0.1,
+              ),
+            ),
+            const SizedBox(height: 4),
+            GestureDetector(
+              onTap: () => setState(() => _expanded = !_expanded),
+              child: Text(
+                _expanded ? 'Show less' : 'Read more',
+                style: TextStyle(
+                  color: widget.isMe ? Colors.black54 : AirColors.accent,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
         );
     }
   }
@@ -248,6 +288,50 @@ class _ChatBubbleState extends State<ChatBubble> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  void _showActions(BuildContext context) {
+    HapticFeedback.mediumImpact();
+    final time = DateFormat('MMM d, h:mm a')
+        .format(DateTime.fromMillisecondsSinceEpoch(widget.timestamp));
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AirColors.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 10),
+            Container(
+                width: 36, height: 4, decoration: BoxDecoration(color: AirColors.border, borderRadius: BorderRadius.circular(2))),
+            ListTile(
+              leading: const Icon(Icons.copy_rounded, color: AirColors.textPrimary, size: 20),
+              title: const Text('Copy', style: TextStyle(color: AirColors.textPrimary)),
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: widget.text));
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied')));
+              },
+            ),
+            if (widget.onSwipeReply != null)
+              ListTile(
+                leading: const Icon(Icons.reply, color: AirColors.textPrimary, size: 20),
+                title: const Text('Reply', style: TextStyle(color: AirColors.textPrimary)),
+                onTap: () {
+                  Navigator.pop(context);
+                  widget.onSwipeReply!.call();
+                },
+              ),
+            ListTile(
+              leading: const Icon(Icons.schedule, color: AirColors.textSecondary, size: 20),
+              title: Text(time, style: const TextStyle(color: AirColors.textSecondary, fontSize: 13)),
+            ),
+            const SizedBox(height: 8),
+          ],
         ),
       ),
     );
@@ -348,13 +432,17 @@ class _ChatBubbleState extends State<ChatBubble> {
               ),
             ),
             GestureDetector(
-              onTap:
-                  isFailed ? widget.onRetryFailed : null,
+              onTap: isFailed ? widget.onRetryFailed : null,
+              onLongPress: () => _showActions(context),
               onHorizontalDragUpdate: _onDragUpdate,
               onHorizontalDragEnd: _onDragEnd,
-              child: Transform.translate(
-                offset: Offset(_dragDx * 0.55, 0),
-                child: bubble,
+              child: Semantics(
+                label:
+                    '${widget.isMe ? 'You' : widget.peerName}: ${widget.text.isEmpty ? widget.type : widget.text}',
+                child: Transform.translate(
+                  offset: Offset(_dragDx * 0.55, 0),
+                  child: bubble,
+                ),
               ),
             ),
           ],

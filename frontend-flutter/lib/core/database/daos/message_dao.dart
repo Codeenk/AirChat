@@ -53,4 +53,13 @@ class MessageDao {
       whereArgs: [messageId],
     );
   }
+
+  Future<List<ChatMessage>> getPendingMessages() async {
+    final db = await AppDatabase.instance;
+    final maps = await db.query(
+      'messages',
+      where: "status IN ('sending','failed') AND is_me = 1",
+    );
+    return maps.map((m) => ChatMessage.fromMap(m)).toList();
+  }
 }

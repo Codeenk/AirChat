@@ -132,6 +132,31 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     });
   }
 
+  /// Marks all incoming 'delivered' messages in this chat as read: sends
+  /// read receipts, updates the DB and patches local state. Called when the
+  /// chat screen is opened (or new messages arrive while it's open).
+  Future<void> markIncomingAsRead() async {
+    final senderUid = await KeyStore.getUid();
+    if (senderUid == null || senderUid.isEmpty) return;
+
+    final ws = ref.read(websocketClientProvider(senderUid));
+    final dao = ref.read(messageDaoProvider);
+    final updated = <ChatMessage>[];
+    var changed = false;
+
+    for (final m in state) {
+      if (!m.isMe && m.status == 'delivered') {
+        ws.sendReadReceipt(packetId: m.id, senderUid: m.senderUid);
+        await dao.updateMessageStatus(m.id, 'read');
+        updated.add(m.copyWith(status: 'read'));
+        changed = true;
+      } else {
+        updated.add(m);
+      }
+    }
+    if (changed) state = updated;
+  }
+
   /// Re-attempt delivery of a failed message (same id → replaces DB row).
   Future<void> resendMessage(ChatMessage msg,
       {required String recipientPublicKeyBase64}) async {
