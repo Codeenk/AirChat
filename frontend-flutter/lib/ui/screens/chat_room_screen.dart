@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../../core/crypto/key_store.dart';
+import '../../core/device/device_info_helper.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/media_uploader.dart';
 import '../../core/network/notification_service.dart';
@@ -124,6 +126,15 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
       final chatId = buildChatId(uid, widget.contactUid);
       MessageRouter.openChatId = chatId;
       await NotificationService.instance.cancelForChat(widget.contactUid);
+      // Quick reply typed on the notification card while app was alive.
+      final pendingReply = NotificationService.consumePendingReply(widget.contactUid);
+      if (pendingReply != null && pendingReply.isNotEmpty) {
+        ref.read(activeChatMessagesProvider(chatId).notifier).sendTextMessage(
+          recipientUid: widget.contactUid,
+          recipientPublicKeyBase64: widget.contactPublicKey,
+          text: pendingReply,
+        );
+      }
       // Existing delivered messages become read once this chat is open.
       await ref
           .read(activeChatMessagesProvider(chatId).notifier)
@@ -270,12 +281,25 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   }
 
   Future<void> _pickAndSendImage({required ImageSource source}) async {
-    final ok = source == ImageSource.camera
-        ? await _ensurePermission(
-            Permission.camera, 'Camera access is disabled. Enable it in Settings.')
-        : await _ensurePermission(
-            Permission.photos, 'Photo access is disabled. Enable it in Settings.');
-    if (!ok) return;
+    if (source == ImageSource.camera) {
+      final ok = await _ensurePermission(
+          Permission.camera, 'Camera access is disabled. Enable it in Settings.');
+      if (!ok) return;
+    } else {
+      // Gallery: Permission.photos only exists on Android 13+. On older
+      // devices requesting it always fails and blocks the picker entirely.
+      // The system photo picker itself needs no permission; only legacy
+      // Android (<13) may need READ_EXTERNAL_STORAGE.
+      if (!kIsWeb && Platform.isAndroid) {
+        final sdk = int.tryParse(await DeviceInfoHelper.androidSdkInt()) ?? 33;
+        if (sdk < 33) {
+          final ok = await _ensurePermission(
+              Permission.storage,
+              'Storage access is disabled. Enable it in Settings.');
+          if (!ok) return;
+        }
+      }
+    }
     try {
       // Downscale to 1080p max before encryption — reduces encrypt/upload
       // time by ~80% vs 108MP originals and prevents OOM on large sensors.

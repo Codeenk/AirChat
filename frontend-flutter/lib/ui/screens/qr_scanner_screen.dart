@@ -31,6 +31,8 @@ class _QrScannerScreenState extends State<QrScannerScreen>
     with WidgetsBindingObserver {
   bool _isHandled = false;
   bool _hasCameraPermission = false;
+  bool _starting = false;
+  bool _screenDisposed = false;
   MobileScannerController? _controller;
   StreamSubscription<Object?>? _subscription;
 
@@ -43,6 +45,7 @@ class _QrScannerScreenState extends State<QrScannerScreen>
 
   @override
   void dispose() {
+    _screenDisposed = true;
     WidgetsBinding.instance.removeObserver(this);
     _subscription?.cancel();
     _controller?.dispose();
@@ -72,11 +75,13 @@ class _QrScannerScreenState extends State<QrScannerScreen>
   Future<void> _resumeScannerIfPermitted() async {
     // Returning from Settings after granting: controller state may still say
     // "denied" because only start() updates it — check with permission_handler.
+    // Skip while a start is already in flight (permission-dialog race).
+    if (_starting) return;
     final granted =
         await Permission.camera.status.isGranted ||
             await Permission.camera.status.isLimited;
     if (!mounted || !granted) return;
-    setState(() => _hasCameraPermission = true);
+    if (!_hasCameraPermission) setState(() => _hasCameraPermission = true);
     await _startScanner();
   }
 
@@ -92,23 +97,38 @@ class _QrScannerScreenState extends State<QrScannerScreen>
   }
 
   Future<void> _startScanner() async {
-    // (Re)create the controller fresh — a previously-stopped controller can
-    // refuse to restart cleanly, which shows up as a black preview.
-    await _subscription?.cancel();
-    var controller = _controller;
-    if (controller != null) {
-      await controller.dispose();
-      _controller = null;
-    }
-    controller = MobileScannerController(autoStart: false);
-    _controller = controller;
-    _subscription = controller.barcodes.listen(_onDetect);
+    // Serialize: the permission-dialog resume path and the original request
+    // await can both land here — creating two controllers concurrently
+    // leaves the camera dead (black preview, unrecoverable until restart).
+    if (_starting) return;
+    _starting = true;
     try {
-      await controller.start();
-    } catch (e) {
-      debugPrint('[AirChat] scanner start failed: $e');
+      await _subscription?.cancel();
+      _subscription = null;
+      var controller = _controller;
+      if (controller != null) {
+        _controller = null;
+        try {
+          await controller.stop();
+        } catch (_) {}
+        await controller.dispose();
+      }
+      controller = MobileScannerController(autoStart: false);
+      _controller = controller;
+      _subscription = controller.barcodes.listen(_onDetect);
+      try {
+        await controller.start();
+      } catch (e) {
+        debugPrint('[AirChat] scanner start failed: $e');
+      }
+      if (_screenDisposed) {
+        try { await controller.dispose(); } catch (_) {}
+        return;
+      }
+      if (mounted) setState(() {});
+    } finally {
+      _starting = false;
     }
-    if (mounted) setState(() {});
   }
 
   void _onDetect(BarcodeCapture capture) => _handleBarcodes(capture);

@@ -1,5 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+
+import '../quick_reply/quick_reply_sender.dart';
 
 class NotificationService {
   static final NotificationService instance = NotificationService._();
@@ -36,23 +40,46 @@ class NotificationService {
       requestBadgePermission: true,
       requestSoundPermission: true,
     );
+
+    // Create the channel explicitly — required for reliable delivery and
+    // user-controlled importance on Android 8+.
+    final androidPlugin = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    await androidPlugin?.createNotificationChannel(const AndroidNotificationChannel(
+      'airchat_messages',
+      'Messages',
+      description: 'New end-to-end encrypted messages',
+      importance: Importance.high,
+    ));
+
     await _plugin.initialize(
       settings: const InitializationSettings(android: androidInit, iOS: iosInit),
-      onDidReceiveNotificationResponse: _handleResponse,
-      onDidReceiveBackgroundNotificationResponse: _handleBackgroundResponse,
+      onDidReceiveNotificationResponse: _onNotificationResponse,
+      onDidReceiveBackgroundNotificationResponse: _onBackgroundNotificationResponse,
     );
     _initialized = true;
   }
 
-  static void _handleResponse(NotificationResponse r) {
+  void _onNotificationResponse(NotificationResponse r) {
     if (r.actionId == 'reply_action' && (r.input?.isNotEmpty ?? false)) {
-      _pendingQuickReplies[r.payload ?? ''] = r.input!;
+      final senderUid = r.payload ?? '';
+      final text = r.input!.trim();
+      if (senderUid.isEmpty || text.isEmpty) return;
+      // Foreground: stash for the open chat screen to consume.
+      _pendingQuickReplies[senderUid] = text;
     }
   }
 
   @pragma('vm:entry-point')
-  static void _handleBackgroundResponse(NotificationResponse r) {
-    _handleResponse(r);
+  static void _onBackgroundNotificationResponse(NotificationResponse r) {
+    if (r.actionId == 'reply_action' && (r.input?.isNotEmpty ?? false)) {
+      final senderUid = r.payload ?? '';
+      final text = r.input!.trim();
+      if (senderUid.isEmpty || text.isEmpty) return;
+      // Background isolate (action tapped while app killed): send directly.
+      // Fire-and-forget; the handler must return promptly.
+      unawaited(QuickReplySender.send(recipientUid: senderUid, text: text));
+    }
   }
 
   static final Map<String, String> _pendingQuickReplies = {};
@@ -101,6 +128,9 @@ class NotificationService {
       showWhen: true,
       styleInformation: styleInformation,
       number: history.length + 1,
+      // Replace by sender tag so re-shows update in place (no duplicates).
+      tag: senderUid,
+      autoCancel: true,
       actions: [
         AndroidNotificationAction(
           'reply_action',
@@ -133,7 +163,8 @@ class NotificationService {
   Future<void> cancelForChat(String senderUid) async {
     if (!_supported) return;
     _shownLines.remove(senderUid);
-    await _plugin.cancel(id: notificationIdFor(senderUid));
+    // Tagged notifications must be cancelled by (tag, id) pair.
+    await _plugin.cancel(id: notificationIdFor(senderUid), tag: senderUid);
   }
 
   /// Clears everything (app resumed → all notifications are stale).
