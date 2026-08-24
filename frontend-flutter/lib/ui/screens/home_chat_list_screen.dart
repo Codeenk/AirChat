@@ -6,6 +6,7 @@ import '../../core/database/daos/chat_dao.dart';
 import '../../core/database/daos/contact_dao.dart';
 import '../../core/network/api_client.dart';
 import '../../core/theme/colors.dart';
+import '../../core/update/update_checker.dart';
 import '../../models/contact.dart';
 import '../../models/chat_thread.dart';
 import '../../state/chat_provider.dart';
@@ -27,6 +28,49 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
   void initState() {
     super.initState();
     _refreshAfterInteraction();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdates(silent: true));
+  }
+
+  Future<void> _checkForUpdates({required bool silent}) async {
+    final info = await UpdateChecker.checkForUpdate();
+    if (!mounted || info == null) {
+      if (!silent && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Already on the latest version')));
+      }
+      return;
+    }
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: AirColors.surface,
+        title: Text('Update available — ${info.latestTag}',
+            style: const TextStyle(color: AirColors.textPrimary, fontSize: 16, fontWeight: FontWeight.w600)),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            child: Text(
+              info.body.isEmpty ? 'A new version of AirChat is available.' : info.body.split('\n').take(12).join('\n'),
+              style: const TextStyle(color: AirColors.textSecondary, fontSize: 13),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Later', style: TextStyle(color: AirColors.textSecondary)),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AirColors.accent, foregroundColor: AirColors.background),
+            onPressed: () {
+              Navigator.pop(context);
+              UpdateChecker.openDownload(info);
+            },
+            child: const Text('Download'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _refreshAfterInteraction() {
@@ -64,6 +108,15 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
                 MaterialPageRoute(builder: (_) => const QrIdentityScreen()),
               );
             },
+          ),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert, color: AirColors.textPrimary),
+            onSelected: (v) {
+              if (v == 'update') _checkForUpdates(silent: false);
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'update', child: Text('Check for updates')),
+            ],
           ),
         ],
       ),
