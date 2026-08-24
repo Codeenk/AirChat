@@ -153,6 +153,11 @@ class NotificationService {
     );
 
     if (senderUid != null) {
+      // Dedupe: cancel the OS-displayed FCM notification (id 0 + tag =
+      // senderUid) so it doesn't stack alongside this richer local one.
+      try {
+        await _plugin.cancel(id: 0, tag: senderUid);
+      } catch (_) {}
       final list = _shownLines.putIfAbsent(senderUid, () => []);
       list.add(MessageLine(text: body, timestamp: DateTime.now().millisecondsSinceEpoch));
       if (list.length > 8) list.removeRange(0, list.length - 8);

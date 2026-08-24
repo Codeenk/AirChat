@@ -129,9 +129,25 @@ export async function sendSilentWake(
               senderUid,
               ...(senderName ? { senderName } : {}),
             },
-            android: { priority: "HIGH" },
+            // Notification payload: displayed by the OS itself — delivered
+            // even when the app process is killed (data-only pushes are
+            // frequently dropped by Doze/OEM battery managers).
+            notification: {
+              title: senderName ?? "AirChat",
+              body: "You have a new message",
+            },
+            android: {
+              priority: "HIGH",
+              notification: {
+                channel_id: "airchat_messages",
+                tag: senderUid,
+              },
+            },
             apns: {
-              payload: { aps: { contentAvailable: true } },
+              payload: { aps: { contentAvailable: true, alert: {
+                title: senderName ?? "AirChat",
+                body: "You have a new message",
+              } } },
               headers: { "apns-push-type": "background", "apns-priority": "5" },
             },
           },

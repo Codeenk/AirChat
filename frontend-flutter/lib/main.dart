@@ -140,11 +140,31 @@ Future<void> _requeuePending(ProviderContainer container, String uid) async {
     for (final msg in pending) {
       final contact = await ContactDao().getContactByUid(msg.recipientUid);
       final pubKey = contact?.identityPublicKey;
-      if (pubKey == null || pubKey.isEmpty) continue;
+      if (pubKey == null || pubKey.isEmpty) {
+        // No key — can't ever deliver; surface as failed instead of a
+        // spinner that spins forever.
+        await MessageDao().updateMessageStatus(msg.id, 'failed');
+        continue;
+      }
       try {
         final recipientPub = await engine.importPublicKey(pubKey);
+        // Preserve ALL fields — a bare {text,type} resend would corrupt
+        // media messages (missing keys) and replies (missing quote).
         final payload = await engine.encryptMessage(
-          plainText: jsonEncode({'text': msg.text, 'type': msg.type}),
+          plainText: jsonEncode({
+            'text': msg.text,
+            'type': msg.type,
+            if (msg.mediaKey != null) 'mediaKey': msg.mediaKey,
+            if (msg.secretKeyHex != null) 'secretKeyHex': msg.secretKeyHex,
+            if (msg.nonceHex != null) 'nonceHex': msg.nonceHex,
+            if (msg.hasReply)
+              'replyTo': {
+                'id': msg.replyToId,
+                'text': msg.replyText,
+                'type': msg.replyType,
+                'isMe': msg.replyIsMe,
+              },
+          }),
           recipientPublicKey: recipientPub,
           senderKeyPair: keyPair,
         );
@@ -154,7 +174,17 @@ Future<void> _requeuePending(ProviderContainer container, String uid) async {
           encryptedPayload: payload.encode(),
           packetId: msg.id,
         );
-      } catch (_) {}
+        // If no ack arrives, flip to failed so the UI shows retry instead
+        // of an endless spinner.
+        Future.delayed(const Duration(seconds: 12), () async {
+          final m = await MessageDao().getPendingMessages();
+          if (m.any((x) => x.id == msg.id)) {
+            await MessageDao().updateMessageStatus(msg.id, 'failed');
+          }
+        });
+      } catch (_) {
+        await MessageDao().updateMessageStatus(msg.id, 'failed');
+      }
     }
   } catch (_) {}
 }

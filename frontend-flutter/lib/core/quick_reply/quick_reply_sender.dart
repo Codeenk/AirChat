@@ -65,6 +65,10 @@ class QuickReplySender {
       // connection (the main app keeps its own).
       await Future<void>.delayed(const Duration(seconds: 2));
       ws.dispose();
+
+      // Mark delivered so the app never shows an eternal "sending" spinner
+      // for this message (the temp isolate can't receive the relay ack).
+      await MessageDao().updateMessageStatus(packetId, 'delivered');
       return true;
     } catch (_) {
       return false;

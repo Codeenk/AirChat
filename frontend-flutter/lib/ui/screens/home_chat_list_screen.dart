@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../../core/crypto/key_store.dart';
 import '../../core/database/daos/chat_dao.dart';
 import '../../core/database/daos/contact_dao.dart';
@@ -28,45 +29,70 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
   void initState() {
     super.initState();
     _refreshAfterInteraction();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdates(silent: true));
+    WidgetsBinding.instance.addPostFrameCallback((_) => _onLaunch());
+  }
+
+  /// On launch: if an update exists → prompt (every launch until updated).
+  /// If already latest → show "What's new" exactly once per version, then
+  /// never again until the next release.
+  Future<void> _onLaunch() async {
+    final packageInfo = await PackageInfo.fromPlatform();
+
+    final update = await UpdateChecker.checkForUpdate();
+    if (!mounted) return;
+    if (update != null) {
+      _showUpdateDialog(update);
+      return;
+    }
+
+    // Up to date: one-time what's-new per version.
+    final firstRun =
+        await UpdateChecker.isFirstRunOfVersion(packageInfo.version);
+    if (firstRun && mounted) {
+      _showWhatsNew(packageInfo.version);
+    }
   }
 
   Future<void> _checkForUpdates({required bool silent}) async {
-    final info = await UpdateChecker.checkForUpdate();
-    if (!mounted || info == null) {
-      if (!silent && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Already on the latest version')));
+    final update = await UpdateChecker.checkForUpdate();
+    if (!mounted) return;
+    if (update == null) {
+      if (!silent) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Already on the latest version')));
       }
       return;
     }
-    if (!mounted) return;
+    _showUpdateDialog(update);
+  }
+
+  void _showUpdateDialog(UpdateInfo info) {
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
+      barrierDismissible: false,
+      builder: (dialogCtx) => _UpdateDialog(info: info),
+    );
+  }
+
+  void _showWhatsNew(String version) {
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
         backgroundColor: AirColors.surface,
-        title: Text('Update available — ${info.latestTag}',
-            style: const TextStyle(color: AirColors.textPrimary, fontSize: 16, fontWeight: FontWeight.w600)),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: SingleChildScrollView(
-            child: Text(
-              info.body.isEmpty ? 'A new version of AirChat is available.' : info.body.split('\n').take(12).join('\n'),
-              style: const TextStyle(color: AirColors.textSecondary, fontSize: 13),
-            ),
-          ),
+        title: Text("What's new in v$version",
+            style: const TextStyle(
+                color: AirColors.textPrimary,
+                fontSize: 16,
+                fontWeight: FontWeight.w600)),
+        content: const Text(
+          "You're on the latest version of AirChat. Check the release notes "
+          "on GitHub for everything that changed.",
+          style: TextStyle(color: AirColors.textSecondary, fontSize: 13),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Later', style: TextStyle(color: AirColors.textSecondary)),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: AirColors.accent, foregroundColor: AirColors.background),
-            onPressed: () {
-              Navigator.pop(context);
-              UpdateChecker.openDownload(info);
-            },
-            child: const Text('Download'),
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: const Text('OK', style: TextStyle(color: AirColors.accent)),
           ),
         ],
       ),
@@ -334,6 +360,111 @@ class _Avatar extends StatelessWidget {
           fontSize: 18,
         ),
       ),
+    );
+  }
+}
+
+/// Update dialog with in-app download progress, then auto-triggers the
+/// Android package installer.
+class _UpdateDialog extends StatefulWidget {
+  final UpdateInfo info;
+  const _UpdateDialog({required this.info});
+
+  @override
+  State<_UpdateDialog> createState() => _UpdateDialogState();
+}
+
+class _UpdateDialogState extends State<_UpdateDialog> {
+  double _progress = 0;
+  bool _downloading = false;
+  bool _failed = false;
+
+  Future<void> _downloadAndInstall() async {
+    setState(() {
+      _downloading = true;
+      _failed = false;
+      _progress = 0;
+    });
+    final ok = await UpdateChecker.downloadAndInstall(
+      widget.info,
+      (p) {
+        if (mounted) setState(() => _progress = p);
+      },
+    );
+    if (!mounted) return;
+    if (!ok) {
+      setState(() {
+        _downloading = false;
+        _failed = true;
+      });
+    } else {
+      Navigator.of(context).pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: AirColors.surface,
+      title: Text('Update available — ${widget.info.latestTag}',
+          style: const TextStyle(
+              color: AirColors.textPrimary,
+              fontSize: 16,
+              fontWeight: FontWeight.w600)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Text(
+                widget.info.body.isEmpty
+                    ? 'A new version of AirChat is available.'
+                    : widget.info.body.split('\n').take(8).join('\n'),
+                style: const TextStyle(
+                    color: AirColors.textSecondary, fontSize: 13),
+              ),
+            ),
+          ),
+          if (_downloading) ...[
+            const SizedBox(height: 16),
+            LinearProgressIndicator(
+              value: _progress > 0 ? _progress : null,
+              backgroundColor: AirColors.surfaceLight,
+              color: AirColors.accent,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _progress > 0
+                  ? 'Downloading… ${(_progress * 100).toStringAsFixed(0)}%'
+                  : 'Downloading…',
+              style:
+                  const TextStyle(color: AirColors.textSecondary, fontSize: 12),
+            ),
+          ],
+          if (_failed) ...[
+            const SizedBox(height: 12),
+            const Text('Download failed — check your connection and retry.',
+                style: TextStyle(color: AirColors.error, fontSize: 12)),
+          ],
+        ],
+      ),
+      actions: [
+        if (!_downloading)
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child:
+                const Text('Later', style: TextStyle(color: AirColors.textSecondary)),
+          ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+              backgroundColor: AirColors.accent,
+              foregroundColor: AirColors.background),
+          onPressed: _downloading ? null : _downloadAndInstall,
+          child: Text(_downloading ? 'Installing…' : 'Download & Install'),
+        ),
+      ],
     );
   }
 }
