@@ -53,6 +53,12 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     return handleUpdateFcmToken(request, env);
   }
 
+  // 3c. Notification self-test: send a data-only push to the caller's own
+  // registered token so the client can verify end-to-end delivery health.
+  if (url.pathname === "/api/identity/test-push" && request.method === "POST") {
+    return handleTestPush(request, env);
+  }
+
   // 4. Ephemeral Encrypted Media Upload (KV, auto-expires in 24h)
   if (url.pathname.startsWith("/api/media/upload/") && request.method === "PUT") {
     const fileKey = url.pathname.replace("/api/media/upload/", "");
@@ -87,3 +93,48 @@ export default {
     }
   }
 };
+
+// Notification self-test handler: pushes type=self_test to the caller's own
+// FCM token. The client confirms receipt locally (never through this API —
+// the round-trip is device → FCM → device).
+async function handleTestPush(request: any, env: any): Promise<Response> {
+  try {
+    const body = (await request.json()) as { uid?: string };
+    const uid = body.uid;
+    if (!uid) {
+      return new Response(JSON.stringify({ error: "Missing uid" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    const row: { fcm_token: string | null } | null = await env.DB.prepare(
+      "SELECT fcm_token FROM users WHERE uid = ?"
+    )
+      .bind(uid)
+      .first();
+    const fcmToken = row?.fcm_token;
+    if (!fcmToken) {
+      return new Response(JSON.stringify({ error: "No push token registered" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    const ok = await sendTestPush(env, fcmToken);
+    return new Response(JSON.stringify({ sent: ok }), {
+      status: ok ? 200 : 502,
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch {
+    return new Response(JSON.stringify({ error: "Test push failed" }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+}
+
+import { sendSilentWake } from "./utils/fcm";
+
+async function sendTestPush(env: any, fcmToken: string): Promise<boolean> {
+  // Reuses the wake sender with a fixed uid so the client can identify it.
+  return sendSilentWake(env, fcmToken, "self_test", "AirChat");
+}

@@ -14,6 +14,7 @@ import '../../state/chat_provider.dart';
 import 'chat_room_screen.dart';
 import 'qr_identity_screen.dart';
 import 'qr_scanner_screen.dart';
+import 'notification_health_screen.dart';
 import 'username_settings_screen.dart';
 import '../widgets/airchat_logo.dart';
 
@@ -139,9 +140,18 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
             icon: const Icon(Icons.more_vert, color: AirColors.textPrimary),
             onSelected: (v) {
               if (v == 'update') _checkForUpdates(silent: false);
+              if (v == 'health') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => const NotificationHealthScreen()),
+                );
+              }
             },
             itemBuilder: (_) => const [
               PopupMenuItem(value: 'update', child: Text('Check for updates')),
+              PopupMenuItem(
+                  value: 'health', child: Text('Notification health')),
             ],
           ),
         ],

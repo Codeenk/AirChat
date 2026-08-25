@@ -44,6 +44,21 @@ class ApiClient {
     }
   }
 
+  /// Asks the relay to send a data-only self-test push to this device.
+  Future<bool> requestTestPush({required String uid}) async {
+    try {
+      final uri = Uri.parse("$baseUrl/api/identity/test-push");
+      final response = await http
+          .post(uri,
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({'uid': uid}))
+          .timeout(const Duration(seconds: 10));
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<Map<String, dynamic>?> lookupIdentity({
     String? uid,
     String? username,

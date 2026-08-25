@@ -17,6 +17,7 @@ import '../database/daos/chat_dao.dart';
 import '../database/daos/contact_dao.dart';
 import '../database/daos/message_dao.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:native_bridge/native_bridge.dart';
 import '../../models/chat_thread.dart';
 import '../../models/message_payload.dart';
 
@@ -139,12 +140,24 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     }
     await NotificationService.instance.initialize();
 
+    // Notification health self-test: record receipt so the Health screen
+    // can show "verified working".
+    if (message.data['senderUid'] == 'self_test') {
+      await _handleSelfTest();
+      return;
+    }
+
     // 24h cache expired: the sender's message was destroyed undelivered.
     // Mark it failed locally + tell the sender honestly.
     if (message.data['type'] == 'delivery_failed') {
       await _handleDeliveryFailed(message.data);
       return;
     }
+
+    // Signal/Delta-Chat trick: promote to a dataSync foreground service for
+    // ~12s — guarantees network access on OEM-restricted phones while the
+    // isolate fetches the queued message.
+    await NativeBridge.startWakeGuard();
 
     // Data-only wake: try to fetch + decrypt the queued message over the WS
     // (time-boxed) so the notification shows the REAL text. Falls back
@@ -161,6 +174,17 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     debugPrint('[AirChat][bg] handler failed: $e\n$st');
     CrashReporter.recordError(error: e, stackTrace: st, source: 'fcm-bg');
   }
+}
+
+/// Records a successful push round-trip for the Notification Health screen.
+Future<void> _handleSelfTest() async {
+  try {
+    const storage = FlutterSecureStorage();
+    await storage.write(
+        key: 'airchat_last_push_verified',
+        value: DateTime.now().millisecondsSinceEpoch.toString());
+    debugPrint('[AirChat][bg] self-test push received');
+  } catch (_) {}
 }
 
 /// Marks the sender's expired messages as 'expired' in the local DB and

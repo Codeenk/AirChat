@@ -16,4 +16,16 @@ class DeviceInfoHelper {
       return '33';
     }
   }
+
+  /// Returns the device manufacturer (e.g. "realme", "Xiaomi"), or "" on
+  /// non-Android.
+  static Future<String> manufacturer() async {
+    if (!Platform.isAndroid) return '';
+    try {
+      final info = await DeviceInfoPlugin().androidInfo;
+      return info.manufacturer;
+    } catch (_) {
+      return '';
+    }
+  }
 }
