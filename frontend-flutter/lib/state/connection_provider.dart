@@ -120,6 +120,20 @@ class MessageRouter {
             status: 'read',
           ));
         }
+      } else if (type == 'delivery_failed') {
+        // 24h ephemeral cache expired — the message was destroyed server-side
+        // and never reached the recipient. Mark honestly as expired.
+        final packetIds = (msg['packetIds'] as List<dynamic>?) ?? const [];
+        for (final id in packetIds) {
+          if (id is String && id.isNotEmpty) {
+            messageDao.updateMessageStatus(id, 'expired');
+            bus.fire(RefreshEvent(
+              type: 'status',
+              messageId: id,
+              status: 'expired',
+            ));
+          }
+        }
       } else if (type == 'delivery_receipt') {
         final packetId = msg['packetId'] as String?;
         if (packetId != null) {

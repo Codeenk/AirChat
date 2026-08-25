@@ -113,6 +113,7 @@ class _ChatBubbleState extends State<ChatBubble> {
 
     switch (widget.status) {
       case 'failed':
+      case 'expired':
         return const Icon(Icons.error_outline, size: 14, color: Color(0xFFB3261E));
       case 'sending':
         return Icon(Icons.access_time, size: 13, color: onLight);
@@ -125,6 +126,9 @@ class _ChatBubbleState extends State<ChatBubble> {
         return const Icon(Icons.done_all, size: 14, color: AirColors.bubbleMeText);
     }
   }
+
+  bool get _isUndelivered =>
+      widget.isMe && (widget.status == 'failed' || widget.status == 'expired');
 
   Widget _buildContent() {
     switch (widget.type) {
@@ -343,7 +347,7 @@ class _ChatBubbleState extends State<ChatBubble> {
       DateTime.fromMillisecondsSinceEpoch(widget.timestamp),
     );
 
-    final isFailed = widget.isMe && widget.status == 'failed';
+    final isFailed = _isUndelivered;
 
     // Me = off-white block with black ink (inverted). Peer = dark gray.
     final bubbleColor = isFailed
@@ -383,11 +387,13 @@ class _ChatBubbleState extends State<ChatBubble> {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (isFailed)
-            const Padding(
-              padding: EdgeInsets.only(bottom: 4),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
               child: Text(
-                "Not delivered — tap to retry",
-                style: TextStyle(color: AirColors.error, fontSize: 11),
+                widget.status == 'expired'
+                    ? "Expired after 24h — recipient was offline. Tap to resend"
+                    : "Not delivered — tap to retry",
+                style: const TextStyle(color: AirColors.error, fontSize: 11),
               ),
             ),
           if (_hasReply) _buildQuoteBlock(metaColor),

@@ -510,7 +510,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                               onTapQuote: msg.hasReply
                                   ? () => _jumpToMessage(msg.replyToId!)
                                   : null,
-                              onRetryFailed: msg.isMe && msg.status == 'failed'
+                              onRetryFailed: msg.isMe &&
+                              (msg.status == 'failed' ||
+                                  msg.status == 'expired')
                                   ? () => ref
                                       .read(activeChatMessagesProvider(chatId)
                                           .notifier)

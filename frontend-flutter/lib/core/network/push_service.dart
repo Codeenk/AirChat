@@ -139,8 +139,15 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     }
     await NotificationService.instance.initialize();
 
+    // 24h cache expired: the sender's message was destroyed undelivered.
+    // Mark it failed locally + tell the sender honestly.
+    if (message.data['type'] == 'delivery_failed') {
+      await _handleDeliveryFailed(message.data);
+      return;
+    }
+
     // Data-only wake: try to fetch + decrypt the queued message over the WS
-    // (time-boxed 8s) so the notification shows the REAL text. Falls back
+    // (time-boxed) so the notification shows the REAL text. Falls back
     // to the generic body on timeout/offline.
     String? realText;
     try {
@@ -153,6 +160,40 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   } catch (e, st) {
     debugPrint('[AirChat][bg] handler failed: $e\n$st');
     CrashReporter.recordError(error: e, stackTrace: st, source: 'fcm-bg');
+  }
+}
+
+/// Marks the sender's expired messages as 'expired' in the local DB and
+/// surfaces an honest "not delivered" notification.
+Future<void> _handleDeliveryFailed(Map<String, dynamic> data) async {
+  try {
+    final packetIdsRaw = data['packetIds'] as String?;
+    if (packetIdsRaw == null) return;
+    final packetIds = (jsonDecode(packetIdsRaw) as List<dynamic>)
+        .whereType<String>()
+        .toList();
+    if (packetIds.isEmpty) return;
+
+    await AppDatabase.instance;
+    for (final id in packetIds) {
+      await MessageDao().updateMessageStatus(id, 'expired');
+    }
+
+    final recipientUid = data['recipientUid'] as String?;
+    final contact = recipientUid != null
+        ? await ContactDao().getContactByUid(recipientUid)
+        : null;
+    final name = contact?.username ?? 'your contact';
+    await NotificationService.instance.showMessageNotification(
+      title: 'Message not delivered',
+      body:
+          'Your message to $name expired after 24h — they were offline. Open AirChat to retry.',
+      senderUid: recipientUid,
+    );
+    debugPrint('[AirChat][bg] marked ${packetIds.length} messages expired');
+  } catch (e, st) {
+    debugPrint('[AirChat][bg] delivery_failed handling failed: $e');
+    CrashReporter.recordError(error: e, stackTrace: st, source: 'delivery-failed');
   }
 }
 

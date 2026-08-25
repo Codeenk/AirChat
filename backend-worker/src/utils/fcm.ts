@@ -152,3 +152,50 @@ export async function sendSilentWake(
     return false; // Never fail message queuing because of push errors
   }
 }
+
+// Data-only push telling a sender that their message expired undelivered
+// (24h cache lifetime reached). Contains only packet ids — zero content.
+export async function sendDeliveryFailedWake(
+  env: { FCM_SERVICE_ACCOUNT_JSON?: string; FCM_PROJECT_ID?: string },
+  fcmToken: string,
+  packetIds: string[],
+  recipientUid: string,
+): Promise<boolean> {
+  if (!env.FCM_SERVICE_ACCOUNT_JSON || !env.FCM_PROJECT_ID) {
+    return false;
+  }
+
+  try {
+    const accessToken = await getFcmAccessToken(env.FCM_SERVICE_ACCOUNT_JSON);
+
+    const res = await fetch(
+      `https://fcm.googleapis.com/v1/projects/${env.FCM_PROJECT_ID}/messages:send`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: {
+            token: fcmToken,
+            data: {
+              type: "delivery_failed",
+              packetIds: JSON.stringify(packetIds),
+              recipientUid,
+            },
+            android: { priority: "HIGH" },
+            apns: {
+              payload: { aps: { contentAvailable: true } },
+              headers: { "apns-push-type": "background", "apns-priority": "5" },
+            },
+          },
+        }),
+      },
+    );
+
+    return res.ok;
+  } catch {
+    return false;
+  }
+}

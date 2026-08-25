@@ -6,12 +6,24 @@ export interface EphemeralPacket {
   timestamp: number;
 }
 
-import { sendSilentWake } from "../utils/fcm";
+interface SocketLease {
+  ws: WebSocket;
+  lastSeen: number;
+}
+
+import { sendSilentWake, sendDeliveryFailedWake } from "../utils/fcm";
+
+const TTL_MS = 24 * 60 * 60 * 1000; // 24h ephemeral cache — the only server storage
+const LEASE_MS = 90 * 1000; // socket lease: ping every 25s refreshes; >90s = dead wire
+const MAX_BATCH = 128; // storage.delete / list batch safety
 
 export class ConnectionRelay {
   private state: DurableObjectState;
   private env: any;
-  private sockets: Map<string, WebSocket> = new Map();
+  // Lease-based socket registry: a wire exists only while the client keeps
+  // pinging. Dead wires (no close event, e.g. process killed) are evicted
+  // once their lease expires — messages are never "relayed" into them.
+  private sockets: Map<string, SocketLease> = new Map();
 
   constructor(state: DurableObjectState, env?: any) {
     this.state = state;
@@ -42,7 +54,12 @@ export class ConnectionRelay {
 
   private async handleSession(ws: WebSocket, uid: string): Promise<void> {
     ws.accept();
-    this.sockets.set(uid, ws);
+    // Replace any stale wire for this uid (old socket without close event).
+    const stale = this.sockets.get(uid);
+    if (stale && stale.ws !== ws) {
+      try { stale.ws.close(4000, "replaced"); } catch { /* already dead */ }
+    }
+    this.sockets.set(uid, { ws, lastSeen: Date.now() });
 
     // Deliver queued ephemeral messages stored persistently in DO storage
     await this.flushEphemeralQueue(ws, uid);
@@ -52,17 +69,20 @@ export class ConnectionRelay {
         const data = JSON.parse(event.data as string);
 
         if (data.action === "ping") {
+          // Heartbeat refreshes the wire lease.
+          const lease = this.sockets.get(uid);
+          if (lease) lease.lastSeen = Date.now();
           ws.send(JSON.stringify({ type: "pong", timestamp: Date.now() }));
           return;
         }
 
         if (data.action === "send_packet") {
           const { recipientUid, encryptedPayload, packetId } = data;
-          const targetWs = this.sockets.get(recipientUid);
+          const targetLease = this.getLiveLease(recipientUid);
 
-          if (targetWs && targetWs.readyState === WebSocket.READY_STATE_OPEN) {
-            // Direct real-time WebSocket delivery (same shard or within-session)
-            targetWs.send(JSON.stringify({
+          if (targetLease) {
+            // Direct real-time WebSocket delivery (the wire)
+            targetLease.ws.send(JSON.stringify({
               type: "direct_message",
               senderUid: uid,
               packetId,
@@ -73,7 +93,7 @@ export class ConnectionRelay {
             // Immediate ACK to sender
             ws.send(JSON.stringify({ type: "packet_status", packetId, status: "relayed" }));
           } else {
-            // Recipient on different shard or offline -> Buffer in DO storage
+            // Recipient offline -> 24h ephemeral cache (the only server storage)
             await this.enqueueEphemeralPacket({
               id: packetId,
               senderUid: uid,
@@ -94,9 +114,9 @@ export class ConnectionRelay {
           const { packetId, senderUid } = data;
           await this.state.storage.delete(`msg:${uid}:${packetId}`);
 
-          const senderWs = this.sockets.get(senderUid);
-          if (senderWs && senderWs.readyState === WebSocket.READY_STATE_OPEN) {
-            senderWs.send(JSON.stringify({ type: "delivery_receipt", packetId, status: "delivered" }));
+          const senderLease = this.getLiveLease(senderUid);
+          if (senderLease) {
+            senderLease.ws.send(JSON.stringify({ type: "delivery_receipt", packetId, status: "delivered" }));
           }
         }
 
@@ -105,9 +125,9 @@ export class ConnectionRelay {
           if (!packetId || !senderUid) return;
 
           // Best-effort: notify the original sender that their message was read.
-          const senderWs = this.sockets.get(senderUid);
-          if (senderWs && senderWs.readyState === WebSocket.READY_STATE_OPEN) {
-            senderWs.send(JSON.stringify({ type: "read_receipt", packetId }));
+          const senderLease = this.getLiveLease(senderUid);
+          if (senderLease) {
+            senderLease.ws.send(JSON.stringify({ type: "read_receipt", packetId }));
           }
         }
       } catch (err) {
@@ -116,8 +136,28 @@ export class ConnectionRelay {
     });
 
     ws.addEventListener("close", () => {
-      this.sockets.delete(uid);
+      const lease = this.sockets.get(uid);
+      if (lease && lease.ws === ws) {
+        this.sockets.delete(uid);
+      }
     });
+  }
+
+  /// A wire is live only if the socket is open AND its lease is fresh.
+  private getLiveLease(uid: string): SocketLease | null {
+    const lease = this.sockets.get(uid);
+    if (!lease) return null;
+    if (lease.ws.readyState !== WebSocket.READY_STATE_OPEN) {
+      this.sockets.delete(uid);
+      return null;
+    }
+    if (Date.now() - lease.lastSeen > LEASE_MS) {
+      // Dead wire: process died without a close event. Evict + close.
+      try { lease.ws.close(4001, "lease expired"); } catch { /* ignore */ }
+      this.sockets.delete(uid);
+      return null;
+    }
+    return lease;
   }
 
   private async enqueueEphemeralPacket(packet: EphemeralPacket): Promise<void> {
@@ -126,7 +166,7 @@ export class ConnectionRelay {
 
     const currentAlarm = await this.state.storage.getAlarm();
     if (!currentAlarm) {
-      await this.state.storage.setAlarm(Date.now() + 24 * 60 * 60 * 1000);
+      await this.state.storage.setAlarm(Date.now() + TTL_MS);
     }
   }
 
@@ -147,16 +187,27 @@ export class ConnectionRelay {
     }
   }
 
-  // Durable Object 24-hour cleanup alarm handler
+  // 24-hour expiry alarm: the ephemeral cache is the ONLY server storage, so
+  // expired messages are destroyed — and every sender is honestly notified
+  // that their message was not delivered.
   async alarm(): Promise<void> {
     const now = Date.now();
-    const cutoff = now - 24 * 60 * 60 * 1000;
+    const cutoff = now - TTL_MS;
     const allMessages = await this.state.storage.list<EphemeralPacket>({ prefix: "msg:" });
 
+    // senderUid -> failed packetIds (for the notification payload)
+    const expiredBySender = new Map<string, { recipientUid: string; packetIds: string[] }>();
     const toDelete: string[] = [];
+
     for (const [key, packet] of allMessages) {
       if (packet.timestamp < cutoff) {
         toDelete.push(key);
+        const entry = expiredBySender.get(packet.senderUid) ?? {
+          recipientUid: packet.recipientUid,
+          packetIds: [],
+        };
+        entry.packetIds.push(packet.id);
+        expiredBySender.set(packet.senderUid, entry);
       }
     }
 
@@ -164,8 +215,47 @@ export class ConnectionRelay {
       await this.state.storage.delete(toDelete);
     }
 
-    // Reschedule alarm
-    await this.state.storage.setAlarm(Date.now() + 24 * 60 * 60 * 1000);
+    // Notify each sender: live wire gets a WS event, offline gets a push.
+    for (const [senderUid, info] of expiredBySender) {
+      await this.notifySenderOfExpiry(senderUid, info.recipientUid, info.packetIds);
+    }
+
+    // Reschedule alarm only if messages remain
+    const remaining = await this.state.storage.list({ prefix: "msg:", limit: 1 });
+    if (remaining.size > 0) {
+      await this.state.storage.setAlarm(now + TTL_MS);
+    }
+  }
+
+  private async notifySenderOfExpiry(
+    senderUid: string,
+    recipientUid: string,
+    packetIds: string[]
+  ): Promise<void> {
+    try {
+      const senderLease = this.getLiveLease(senderUid);
+      if (senderLease) {
+        senderLease.ws.send(JSON.stringify({
+          type: "delivery_failed",
+          packetIds,
+          recipientUid,
+          reason: "expired",
+        }));
+        console.log(`[relay] expiry notified (ws) sender=${senderUid} packets=${packetIds.length}`);
+        return;
+      }
+
+      // Sender offline: wake push so their app can mark the messages failed.
+      const row: { fcm_token: string | null } | null = await this.env.DB.prepare(
+        "SELECT fcm_token FROM users WHERE uid = ?"
+      ).bind(senderUid).first();
+
+      if (!row?.fcm_token) return;
+      const ok = await sendDeliveryFailedWake(this.env, row.fcm_token, packetIds, recipientUid);
+      console.log(`[relay] expiry notified (push=${ok}) sender=${senderUid} packets=${packetIds.length}`);
+    } catch (e) {
+      console.log(`[relay] expiry notify failed sender=${senderUid}: ${e}`);
+    }
   }
 
   // FCM Silent Data-only Push Wake Notification (containing zero message content)
