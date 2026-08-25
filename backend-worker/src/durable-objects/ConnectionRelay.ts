@@ -83,6 +83,7 @@ export class ConnectionRelay {
             });
 
             // Dispatch silent FCM wake-up notification
+            console.log(`[relay] enqueue ${packetId} for ${recipientUid} (sender ${uid})`);
             await this.dispatchSilentPushWake(recipientUid, uid);
 
             ws.send(JSON.stringify({ type: "packet_status", packetId, status: "queued_ephemeral" }));
@@ -132,6 +133,7 @@ export class ConnectionRelay {
   private async flushEphemeralQueue(ws: WebSocket, uid: string): Promise<void> {
     const prefix = `msg:${uid}:`;
     const queuedMap = await this.state.storage.list<EphemeralPacket>({ prefix });
+    console.log(`[relay] flush uid=${uid} queued=${queuedMap.size}`);
 
     for (const [key, msg] of queuedMap) {
       ws.send(JSON.stringify({
@@ -180,9 +182,13 @@ export class ConnectionRelay {
         ).bind(recipientUid, senderUid).first();
 
       const fcmToken = row?.fcm_token;
-      if (!fcmToken) return;
+      if (!fcmToken) {
+        console.log(`[relay] wake skip: no fcm token for ${recipientUid}`);
+        return;
+      }
 
-      await sendSilentWake(this.env, fcmToken, senderUid, row?.sender_username ?? undefined);
+      const ok = await sendSilentWake(this.env, fcmToken, senderUid, row?.sender_username ?? undefined);
+      console.log(`[relay] wake sent=${ok} to ${recipientUid}`);
     } catch {
       // Ignore push dispatch errors if FCM is unconfigured
     }

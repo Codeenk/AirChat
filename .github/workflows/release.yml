@@ -64,6 +64,18 @@ jobs:
           flutter analyze --no-pub --no-fatal-infos
           flutter test --no-pub
 
+      - name: Decode signing keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > frontend-flutter/android/app-release-key.jks
+          cat > frontend-flutter/android/key.properties << PROPS
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyAlias=airchat
+          storeFile=app-release-key.jks
+          PROPS
+
       - name: Build release APKs (split-per-abi + obfuscated)
         working-directory: frontend-flutter
         run: |

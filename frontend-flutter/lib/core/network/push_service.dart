@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:permission_handler/permission_handler.dart' as ph;
 import 'notification_service.dart';
+import '../crash/crash_reporter.dart';
 import '../network/api_client.dart';
 import '../crypto/key_store.dart';
 import '../crypto/sodium_engine.dart';
@@ -13,7 +16,7 @@ import '../database/app_database.dart';
 import '../database/daos/chat_dao.dart';
 import '../database/daos/contact_dao.dart';
 import '../database/daos/message_dao.dart';
-import '../network/websocket_client.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 import '../../models/chat_thread.dart';
 import '../../models/message_payload.dart';
 
@@ -40,10 +43,15 @@ class PushService {
       sound: true,
     );
 
-    if (settings.authorizationStatus == AuthorizationStatus.denied) return;
-
+    // IMPORTANT: do NOT early-return when denied — the FCM token must be
+    // registered regardless, otherwise the device silently receives zero
+    // pushes forever (even if the user grants permission later, until the
+    // next app restart). Permission is re-requested on every launch, so a
+    // later grant starts working immediately.
     await NotificationService.instance.initialize();
-    await NotificationService.instance.requestPermissions();
+    if (settings.authorizationStatus != AuthorizationStatus.denied) {
+      await NotificationService.instance.requestPermissions();
+    }
     await _ensureBatteryOptimizationExempt();
 
     final token = await _messaging.getToken();
@@ -123,34 +131,35 @@ void _handleWake(RemoteMessage message) {
 
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  // Fresh background isolate — everything must be initialized from scratch.
-  if (Firebase.apps.isEmpty) {
-    await Firebase.initializeApp();
-  }
-  await NotificationService.instance.initialize();
+  debugPrint('[AirChat][bg] handler entered data=${message.data}');
+  try {
+    // Fresh background isolate — everything must be initialized from scratch.
+    if (Firebase.apps.isEmpty) {
+      await Firebase.initializeApp();
+    }
+    await NotificationService.instance.initialize();
 
-  if (message.notification != null) {
-    // The OS already displayed the FCM notification ("You have a new
-    // message"). Try to fetch the actual queued message over the WS and
-    // REPLACE that generic notification with the real decrypted text.
+    // Data-only wake: try to fetch + decrypt the queued message over the WS
+    // (time-boxed 8s) so the notification shows the REAL text. Falls back
+    // to the generic body on timeout/offline.
+    String? realText;
     try {
-      final real = await _fetchQueuedMessage(message);
-      if (real != null) {
-        await _showWakeNotification(message, bodyOverride: real);
-        return;
-      }
-    } catch (_) {}
-    // Nothing fetched (offline/timeout) — leave the OS notification as-is.
-    return;
+      realText = await _fetchQueuedMessage(message);
+    } catch (e) {
+      debugPrint('[AirChat][bg] enrich failed: $e');
+    }
+    await _showWakeNotification(message, bodyOverride: realText);
+    debugPrint('[AirChat][bg] wake notification shown (real=${realText != null})');
+  } catch (e, st) {
+    debugPrint('[AirChat][bg] handler failed: $e\n$st');
+    CrashReporter.recordError(error: e, stackTrace: st, source: 'fcm-bg');
   }
-
-  // Data-only fallback (legacy server): show immediately — no key
-  // derivation, no DB, no network on this path.
-  await _showWakeNotification(message);
 }
 
 /// Connects the tunnel briefly to pull the queued encrypted message from the
 /// relay, decrypts it, persists it locally, and returns the preview text.
+/// Uses a raw pure-Dart WebSocket (no plugins — guaranteed to work in a
+/// background isolate where plugin registration is unavailable).
 /// Time-boxed — returns null on any failure/timeout.
 Future<String?> _fetchQueuedMessage(RemoteMessage message) async {
   final data = message.data;
@@ -165,68 +174,92 @@ Future<String?> _fetchQueuedMessage(RemoteMessage message) async {
 
   final engine = SodiumEngine();
   final completer = Completer<String?>();
-  final ws = WebSocketTunnelClient(uid: myUid);
-  StreamSubscription<Map<String, dynamic>>? sub;
-
-  Timer(const Duration(seconds: 8), () {
+  Timer(const Duration(seconds: 15), () {
     if (!completer.isCompleted) completer.complete(null);
   });
 
-  sub = ws.messageStream.listen((msg) async {
+  debugPrint('[AirChat][bg] fetch: raw WS connect as $myUid');
+  final channel =
+      WebSocketChannel.connect(Uri.parse(
+          'wss://airchat-relay.malandkar-sarvesh1.workers.dev/tunnel?uid=$myUid'));
+  channel.ready.then((_) {
+    debugPrint('[AirChat][bg] WS READY');
+  }).catchError((e) {
+    debugPrint('[AirChat][bg] WS READY FAILED: $e');
+  });
+  late final StreamSubscription<dynamic> sub;
+  sub = channel.stream.listen((raw) {
+    final rawStr = raw is String ? raw : utf8.decode(raw as List<int>);
     try {
+      final msg = jsonDecode(rawStr) as Map<String, dynamic>;
       if (msg['type'] != 'direct_message') return;
       if (msg['senderUid'] != senderUid) return;
 
       final cryptoPayload = CryptoPayload.decode(msg['payload'] as String);
-      final decrypted = await engine.decryptMessage(
-        payload: cryptoPayload,
-        recipientKeyPair: keyPair,
-      );
-      final decoded = jsonDecode(decrypted);
-      final text = (decoded['text'] as String?) ?? '';
-      final type = (decoded['type'] as String?) ?? 'text';
-      final packetId = msg['packetId'] as String?;
-      final timestamp =
-          (msg['timestamp'] as int?) ?? DateTime.now().millisecondsSinceEpoch;
+      Future(() async {
+        final decrypted = await engine.decryptMessage(
+          payload: cryptoPayload,
+          recipientKeyPair: keyPair,
+        );
+        final decoded = jsonDecode(decrypted);
+        final text = (decoded['text'] as String?) ?? '';
+        final type = (decoded['type'] as String?) ?? 'text';
+        final packetId = msg['packetId'] as String?;
+        final timestamp = (msg['timestamp'] as int?) ??
+            DateTime.now().millisecondsSinceEpoch;
 
-      final chatId = buildChatId(myUid, senderUid);
+        final chatId = buildChatId(myUid, senderUid);
 
-      // Persist so the app shows it on next open (idempotent by packetId).
-      await MessageDao().insertMessage(ChatMessage(
-        id: packetId ?? 'bg_$timestamp',
-        chatId: chatId,
-        senderUid: senderUid,
-        recipientUid: myUid,
-        text: text,
-        type: type,
-        timestamp: timestamp,
-        isMe: false,
-        status: 'delivered',
-        replyToId: (decoded['replyTo']?['id'] as String?),
-        replyText: (decoded['replyTo']?['text'] as String?) ?? '',
-        replyType: (decoded['replyTo']?['type'] as String?) ?? 'text',
-        replyIsMe: decoded['replyTo']?['isMe'] as bool?,
-      ));
-      await ChatDao().updatePreviewPreservingUnread(ChatThread(
-        id: chatId,
-        contactUid: senderUid,
-        lastMessage: text.isEmpty ? '📎 $type' : text,
-        lastMessageTime: timestamp,
-      ));
-      await ChatDao().incrementUnread(chatId);
-      if (packetId != null) {
-        ws.sendAck(packetId: packetId, senderUid: senderUid);
-      }
-
-      if (!completer.isCompleted) {
-        completer.complete(text.isEmpty ? '📎 $type' : text);
-      }
-    } catch (_) {}
+        // Persist so the app shows it on next open (idempotent by packetId).
+        await MessageDao().insertMessage(ChatMessage(
+          id: packetId ?? 'bg_$timestamp',
+          chatId: chatId,
+          senderUid: senderUid,
+          recipientUid: myUid,
+          text: text,
+          type: type,
+          timestamp: timestamp,
+          isMe: false,
+          status: 'delivered',
+          replyToId: (decoded['replyTo']?['id'] as String?),
+          replyText: (decoded['replyTo']?['text'] as String?) ?? '',
+          replyType: (decoded['replyTo']?['type'] as String?) ?? 'text',
+          replyIsMe: decoded['replyTo']?['isMe'] as bool?,
+        ));
+        await ChatDao().updatePreviewPreservingUnread(ChatThread(
+          id: chatId,
+          contactUid: senderUid,
+          lastMessage: text.isEmpty ? '\u{1F4CE} $type' : text,
+          lastMessageTime: timestamp,
+        ));
+        await ChatDao().incrementUnread(chatId);
+        // Ack so the relay deletes the queued copy.
+        channel.sink.add(jsonEncode({
+          'action': 'ack',
+          if (packetId != null) 'packetId': packetId,
+          'senderUid': senderUid,
+        }));
+        if (!completer.isCompleted) {
+          completer.complete(text.isEmpty ? '\u{1F4CE} $type' : text);
+        }
+      }).catchError((e) {
+        debugPrint('[AirChat][bg] decrypt/persist failed: $e');
+      });
+    } catch (e) {
+      debugPrint('[AirChat][bg] ws msg processing failed: $e');
+    }
+  }, onError: (e) {
+    if (!completer.isCompleted) completer.complete(null);
+  }, onDone: () {
+    if (!completer.isCompleted) completer.complete(null);
   });
 
-  ws.connect();
   final result = await completer.future;
   await sub.cancel();
-  ws.dispose();
+  try {
+    await channel.sink.close();
+  } catch (_) {}
+  debugPrint('[AirChat][bg] fetch result: ${result != null ? 'got text' : 'timeout'}');
   return result;
 }
+
