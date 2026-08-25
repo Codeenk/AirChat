@@ -3,6 +3,8 @@ import 'dart:convert';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:permission_handler/permission_handler.dart' as ph;
 import 'notification_service.dart';
 import '../network/api_client.dart';
 import '../crypto/key_store.dart';
@@ -21,6 +23,10 @@ String buildChatId(String a, String b) {
 }
 
 class PushService {
+  static const _storage = FlutterSecureStorage();
+  static const String _keyBatteryOptimizationPrompted =
+      'airchat_battery_opt_asked';
+
   final FirebaseMessaging _messaging = FirebaseMessaging.instance;
   final ApiClient _apiClient;
 
@@ -38,6 +44,7 @@ class PushService {
 
     await NotificationService.instance.initialize();
     await NotificationService.instance.requestPermissions();
+    await _ensureBatteryOptimizationExempt();
 
     final token = await _messaging.getToken();
     if (token != null) {
@@ -55,6 +62,25 @@ class PushService {
     });
 
     FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+  }
+
+  /// THE fix for "notifications don't arrive when the app is killed":
+  /// OEM battery managers (Xiaomi/Oppo/Vivo/Samsung deep sleep) block FCM
+  /// from spawning our background isolate for data-only pushes. Exempting
+  /// the app from battery optimization is the standard, user-approved fix.
+  /// The system dialog is shown at most once (flag in secure storage).
+  Future<void> _ensureBatteryOptimizationExempt() async {
+    try {
+      final asked = await _storage.read(key: _keyBatteryOptimizationPrompted);
+      if (asked == '1') return;
+      final status = await ph.Permission.ignoreBatteryOptimizations.status;
+      if (!status.isGranted) {
+        await ph.Permission.ignoreBatteryOptimizations.request();
+      }
+      await _storage.write(key: _keyBatteryOptimizationPrompted, value: '1');
+    } catch (_) {
+      // Unsupported platform — non-fatal.
+    }
   }
 }
 

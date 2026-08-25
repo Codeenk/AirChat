@@ -124,30 +124,22 @@ export async function sendSilentWake(
         body: JSON.stringify({
           message: {
             token: fcmToken,
+            // DATA-ONLY (no `notification` payload): this is deliberate.
+            // Notification-payload messages are shown by the OS but NEVER
+            // wake the app's background isolate — meaning no decryption,
+            // no real message preview, and no Reply action. Data-only HIGH
+            // messages wake the isolate, which then renders a rich local
+            // notification (real text + quick reply). Reliability against
+            // OEM battery managers is handled client-side via the battery
+            // optimization exemption prompt.
             data: {
               type: "wake",
               senderUid,
               ...(senderName ? { senderName } : {}),
             },
-            // Notification payload: displayed by the OS itself — delivered
-            // even when the app process is killed (data-only pushes are
-            // frequently dropped by Doze/OEM battery managers).
-            notification: {
-              title: senderName ?? "AirChat",
-              body: "You have a new message",
-            },
-            android: {
-              priority: "HIGH",
-              notification: {
-                channel_id: "airchat_messages",
-                tag: senderUid,
-              },
-            },
+            android: { priority: "HIGH" },
             apns: {
-              payload: { aps: { contentAvailable: true, alert: {
-                title: senderName ?? "AirChat",
-                body: "You have a new message",
-              } } },
+              payload: { aps: { contentAvailable: true } },
               headers: { "apns-push-type": "background", "apns-priority": "5" },
             },
           },

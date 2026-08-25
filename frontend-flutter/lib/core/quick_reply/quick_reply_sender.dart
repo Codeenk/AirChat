@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 
+import '../crash/crash_reporter.dart';
 import '../crypto/key_store.dart';
 import '../crypto/sodium_engine.dart';
 import '../database/app_database.dart';
@@ -70,7 +71,8 @@ class QuickReplySender {
       // for this message (the temp isolate can't receive the relay ack).
       await MessageDao().updateMessageStatus(packetId, 'delivered');
       return true;
-    } catch (_) {
+    } catch (e, st) {
+      CrashReporter.recordError(error: e, stackTrace: st, source: 'quick-reply');
       return false;
     }
   }
