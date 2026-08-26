@@ -67,12 +67,12 @@ jobs:
       - name: Verify pubspec version matches tag
         working-directory: frontend-flutter
         run: |
-          TAG="\${{ steps.version.outputs.tag }}"
-          TAG_NUM=\$(echo "\$TAG" | sed 's/^v//' | sed 's/-.*//')
-          PUB=\$(grep '^version:' pubspec.yaml | awk '{print \$2}' | cut -d '+' -f 1)
-          echo "tag=\$TAG_NUM pubspec=\$PUB"
-          if [ "\$TAG_NUM" != "\$PUB" ]; then
-            echo "::error::pubspec.yaml version (\$PUB) does not match tag (\$TAG). Bump pubspec before tagging."
+          TAG="${{ steps.version.outputs.tag }}"
+          TAG_NUM=$(echo "$TAG" | sed 's/^v//' | sed 's/-.*//')
+          PUB=$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d '+' -f 1)
+          echo "tag=$TAG_NUM pubspec=$PUB"
+          if [ "$TAG_NUM" != "$PUB" ]; then
+            echo "::error::pubspec.yaml version ($PUB) does not match tag ($TAG). Bump pubspec before tagging."
             exit 1
           fi
 
