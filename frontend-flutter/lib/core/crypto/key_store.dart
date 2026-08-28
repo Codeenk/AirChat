@@ -17,13 +17,33 @@ class KeyStore {
   static final SodiumEngine _engine = SodiumEngine();
 
   static Future<String> getOrCreateDatabaseMasterKey() async {
-    String? masterKey = await _storage.read(key: _keyDatabaseMasterKey);
-    if (masterKey == null) {
+    try {
+      String? masterKey = await _storage.read(key: _keyDatabaseMasterKey);
+      if (masterKey == null) {
+        final keyBytes = _engine.cipher.newNonce();
+        masterKey = base64Encode(keyBytes);
+        await _storage.write(key: _keyDatabaseMasterKey, value: masterKey);
+      }
+      return masterKey;
+    } catch (e) {
+      try {
+        await _storage.deleteAll();
+      } catch (_) {}
       final keyBytes = _engine.cipher.newNonce();
-      masterKey = base64Encode(keyBytes);
-      await _storage.write(key: _keyDatabaseMasterKey, value: masterKey);
+      final masterKey = base64Encode(keyBytes);
+      try {
+        await _storage.write(key: _keyDatabaseMasterKey, value: masterKey);
+      } catch (_) {}
+      return masterKey;
     }
-    return masterKey;
+  }
+
+  static Future<String?> _safeRead(String key) async {
+    try {
+      return await _storage.read(key: key);
+    } catch (_) {
+      return null;
+    }
   }
 
   static Future<void> saveUserIdentity({
@@ -48,44 +68,51 @@ class KeyStore {
     }
   }
 
-  static Future<String?> getUid() async => await _storage.read(key: _keyUid);
-  static Future<String?> getUsername() async => await _storage.read(key: _keyUsername);
-  static Future<void> setUsername(String username) async =>
+  static Future<String?> getUid() async => await _safeRead(_keyUid);
+  static Future<String?> getUsername() async => await _safeRead(_keyUsername);
+  static Future<void> setUsername(String username) async {
+    try {
       await _storage.write(key: _keyUsername, value: username);
-  static Future<String?> getPublicKey() async => await _storage.read(key: _keyPublicKey);
+    } catch (_) {}
+  }
+  static Future<String?> getPublicKey() async => await _safeRead(_keyPublicKey);
   static Future<String?> getSigningPublicKey() async =>
-      await _storage.read(key: _keySigningPublicKey);
+      await _safeRead(_keySigningPublicKey);
   static Future<String?> getSigningSignature() async =>
-      await _storage.read(key: _keySigningSignature);
+      await _safeRead(_keySigningSignature);
 
   static Future<SimpleKeyPair?> getKeyPair() async {
-    final privateKeyBase64 = await _storage.read(key: _keyPrivateKey);
-    final publicKeyBase64 = await _storage.read(key: _keyPublicKey);
+    final privateKeyBase64 = await _safeRead(_keyPrivateKey);
+    final publicKeyBase64 = await _safeRead(_keyPublicKey);
     if (privateKeyBase64 == null || publicKeyBase64 == null) return null;
-
-    final privateBytes = base64Decode(privateKeyBase64);
-    final publicBytes = base64Decode(publicKeyBase64);
-
-    return SimpleKeyPairData(
-      privateBytes,
-      publicKey: SimplePublicKey(publicBytes, type: KeyPairType.x25519),
-      type: KeyPairType.x25519,
-    );
+    try {
+      final privateBytes = base64Decode(privateKeyBase64);
+      final publicBytes = base64Decode(publicKeyBase64);
+      return SimpleKeyPairData(
+        privateBytes,
+        publicKey: SimplePublicKey(publicBytes, type: KeyPairType.x25519),
+        type: KeyPairType.x25519,
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   static Future<SimpleKeyPair?> getSigningKeyPair() async {
-    final privateKeyHex = await _storage.read(key: _keySigningPrivateKey);
-    final publicKeyHex = await _storage.read(key: _keySigningPublicKey);
+    final privateKeyHex = await _safeRead(_keySigningPrivateKey);
+    final publicKeyHex = await _safeRead(_keySigningPublicKey);
     if (privateKeyHex == null || publicKeyHex == null) return null;
-
-    final privateBytes = _hexToBytes(privateKeyHex);
-    final publicBytes = _hexToBytes(publicKeyHex);
-
-    return SimpleKeyPairData(
-      privateBytes,
-      publicKey: SimplePublicKey(publicBytes, type: KeyPairType.ed25519),
-      type: KeyPairType.ed25519,
-    );
+    try {
+      final privateBytes = _hexToBytes(privateKeyHex);
+      final publicBytes = _hexToBytes(publicKeyHex);
+      return SimpleKeyPairData(
+        privateBytes,
+        publicKey: SimplePublicKey(publicBytes, type: KeyPairType.ed25519),
+        type: KeyPairType.ed25519,
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   static Future<void> saveSigningKeyPair(SimpleKeyPair keyPair) async {

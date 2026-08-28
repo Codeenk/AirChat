@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' as io;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
@@ -34,13 +35,42 @@ class AppDatabase {
     final docsDir = await getApplicationDocumentsDirectory();
     final path = join(docsDir.path, 'airchat_encrypted.db');
 
-    return await openDatabase(
-      path,
-      password: masterKey,
-      version: 3,
-      onCreate: _onCreate,
-      onUpgrade: _onUpgrade,
-    );
+    try {
+      return await openDatabase(
+        path,
+        password: masterKey,
+        version: 3,
+        onCreate: _onCreate,
+        onUpgrade: _onUpgrade,
+      );
+    } catch (e) {
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('file is not a database') ||
+          msg.contains('not a database') ||
+          msg.contains('database disk image is malformed') ||
+          msg.contains('file is encrypted or is not a database')) {
+        await _deleteDbFile(path);
+        return await openDatabase(
+          path,
+          password: masterKey,
+          version: 3,
+          onCreate: _onCreate,
+          onUpgrade: _onUpgrade,
+        );
+      }
+      rethrow;
+    }
+  }
+
+  static Future<void> _deleteDbFile(String path) async {
+    try {
+      final file = io.File(path);
+      if (await file.exists()) await file.delete();
+      for (final suffix in ['-journal', '-wal', '-shm']) {
+        final extra = io.File('$path$suffix');
+        if (await extra.exists()) await extra.delete();
+      }
+    } catch (_) {}
   }
 
   static Future<void> _onCreate(Database db, int version) async {
@@ -92,11 +122,19 @@ class AppDatabase {
   static Future<void> _onUpgrade(
       Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
-      // v2: quoted-reply columns on messages (denormalized reply snapshot).
-      await db.execute('ALTER TABLE messages ADD COLUMN reply_to_id TEXT');
-      await db.execute('ALTER TABLE messages ADD COLUMN reply_text TEXT');
-      await db.execute('ALTER TABLE messages ADD COLUMN reply_type TEXT');
-      await db.execute('ALTER TABLE messages ADD COLUMN reply_is_me INTEGER');
+      // v2: quoted-reply columns — idempotent for crash-recovery (ALTER has no IF NOT EXISTS).
+      for (final sql in [
+        'ALTER TABLE messages ADD COLUMN reply_to_id TEXT',
+        'ALTER TABLE messages ADD COLUMN reply_text TEXT',
+        'ALTER TABLE messages ADD COLUMN reply_type TEXT',
+        'ALTER TABLE messages ADD COLUMN reply_is_me INTEGER',
+      ]) {
+        try {
+          await db.execute(sql);
+        } catch (e) {
+          if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;
+        }
+      }
     }
     if (oldVersion < 3) {
       // v3: performance indexes for chat_id+timestamp and thread ordering.
