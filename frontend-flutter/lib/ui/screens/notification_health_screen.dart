@@ -5,6 +5,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:native_bridge/native_bridge.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../../core/battery/battery_opt_helper.dart';
 import '../../core/crypto/key_store.dart';
 import '../../core/device/device_info_helper.dart';
 import '../../core/network/api_client.dart';
@@ -39,7 +40,7 @@ class _NotificationHealthScreenState extends State<NotificationHealthScreen> {
   }
 
   Future<void> _loadStatus() async {
-    final battery = await Permission.ignoreBatteryOptimizations.status;
+    final battery = await BatteryOptHelper.isExempt();
     final notifs = await Permission.notification.status;
     final manufacturer = await DeviceInfoHelper.manufacturer();
     final lastVerified =
@@ -47,7 +48,7 @@ class _NotificationHealthScreenState extends State<NotificationHealthScreen> {
 
     if (!mounted) return;
     setState(() {
-      _batteryExempt = battery.isGranted;
+      _batteryExempt = battery;
       _notificationsGranted = _notificationsGrantedCheck(notifs);
       _manufacturer = manufacturer;
       _oemTip = _oemTipFor(manufacturer);
@@ -89,7 +90,7 @@ class _NotificationHealthScreenState extends State<NotificationHealthScreen> {
   }
 
   Future<void> _requestBatteryExemption() async {
-    await Permission.ignoreBatteryOptimizations.request();
+    await BatteryOptHelper.requestExemption();
     _loadStatus();
   }
 

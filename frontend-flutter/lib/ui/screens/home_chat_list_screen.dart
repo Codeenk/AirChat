@@ -6,6 +6,7 @@ import '../../core/crypto/key_store.dart';
 import '../../core/database/daos/chat_dao.dart';
 import '../../core/database/daos/contact_dao.dart';
 import '../../core/network/api_client.dart';
+import '../../core/battery/battery_opt_helper.dart';
 import '../../core/theme/colors.dart';
 import '../../core/update/update_checker.dart';
 import '../../models/contact.dart';
@@ -30,7 +31,10 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
   void initState() {
     super.initState();
     _refreshAfterInteraction();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _onLaunch());
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _onLaunch();
+      if (mounted) await BatteryOptHelper.maybePromptOnFirstLaunch(context);
+    });
   }
 
   /// On launch: if an update exists → prompt (every launch until updated).

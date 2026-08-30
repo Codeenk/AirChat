@@ -8,7 +8,10 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../../core/crypto/key_store.dart';
+import '../../core/database/daos/chat_dao.dart';
+import '../../core/database/daos/message_dao.dart';
 import '../../core/device/device_info_helper.dart';
+import '../../models/chat_thread.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/media_uploader.dart';
 import '../../core/network/notification_service.dart';
@@ -140,6 +143,57 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
           .read(activeChatMessagesProvider(chatId).notifier)
           .markIncomingAsRead();
     }
+  }
+
+  Future<void> _deleteForMe(ChatMessage msg) async {
+    final snapshot = msg;
+    final chatId = msg.chatId;
+    await MessageDao().deleteMessage(msg.id);
+    _messageKeys.remove(msg.id);
+    // Recompute thread preview (last remaining message or empty)
+    final remaining = await MessageDao().getMessagesForChat(chatId, limit: 1);
+    if (remaining.isEmpty) {
+      await ChatDao().insertOrUpdateChat(ChatThread(
+        id: chatId,
+        contactUid: widget.contactUid,
+        lastMessage: '',
+        lastMessageTime: DateTime.now().millisecondsSinceEpoch,
+      ));
+    } else {
+      final last = remaining.first;
+      await ChatDao().insertOrUpdateChat(ChatThread(
+        id: chatId,
+        contactUid: widget.contactUid,
+        lastMessage: last.text,
+        lastMessageTime: last.timestamp,
+      ));
+    }
+    if (mounted) ref.invalidate(activeChatMessagesProvider(chatId));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Message deleted for you'),
+        action: SnackBarAction(
+          label: 'Undo',
+          textColor: AirColors.accent,
+          onPressed: () async {
+            await MessageDao().insertMessage(snapshot);
+            final last2 = await MessageDao().getMessagesForChat(chatId, limit: 1);
+            final preview = last2.isEmpty ? '' : last2.first.text;
+            final ts = last2.isEmpty ? DateTime.now().millisecondsSinceEpoch : last2.first.timestamp;
+            await ChatDao().insertOrUpdateChat(ChatThread(
+              id: chatId,
+              contactUid: widget.contactUid,
+              lastMessage: preview,
+              lastMessageTime: ts,
+            ));
+            if (mounted) ref.invalidate(activeChatMessagesProvider(chatId));
+          },
+        ),
+        duration: const Duration(seconds: 5),
+      ),
+    );
   }
 
   void _startReply(ChatMessage msg) {
@@ -465,6 +519,10 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                       final msg = messages[index];
                       final showDateDivider = index == 0 ||
                           !_isSameDay(messages[index - 1].timestamp, msg.timestamp);
+                      final effectiveReplyText = msg.hasReply &&
+                              !messages.any((m) => m.id == msg.replyToId)
+                          ? 'Message deleted'
+                          : msg.replyText;
                       final msgKey = _messageKeys.putIfAbsent(
                           msg.id, () => GlobalKey());
                       return Column(
@@ -501,11 +559,12 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                               backendUrl: ApiClient.defaultBaseUrl,
                               peerName: widget.contactName,
                               replyToId: msg.replyToId,
-                              replyText: msg.replyText,
-                              replyType: msg.replyType,
+                              replyText: effectiveReplyText,
+                              replyType: effectiveReplyText == 'Message deleted' ? 'text' : msg.replyType,
                               replyIsMe: msg.replyIsMe,
                               highlighted:
                                   _highlightedMessageId == msg.id,
+                              onDeleteForMe: () => _deleteForMe(msg),
                               onSwipeReply: () => _startReply(msg),
                               onTapQuote: msg.hasReply
                                   ? () => _jumpToMessage(msg.replyToId!)

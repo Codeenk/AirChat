@@ -30,6 +30,9 @@ class ChatBubble extends StatefulWidget {
   final VoidCallback? onSwipeReply;
   final VoidCallback? onTapQuote;
 
+  /// Delete-for-self (local only)
+  final VoidCallback? onDeleteForMe;
+
   /// Briefly true after jumping to this message from a quote tap.
   final bool highlighted;
 
@@ -52,6 +55,7 @@ class ChatBubble extends StatefulWidget {
     this.peerName = '',
     this.onSwipeReply,
     this.onTapQuote,
+    this.onDeleteForMe,
     this.highlighted = false,
   }) : super(key: key);
 
@@ -328,6 +332,15 @@ class _ChatBubbleState extends State<ChatBubble> {
                 onTap: () {
                   Navigator.pop(context);
                   widget.onSwipeReply!.call();
+                },
+              ),
+            if (widget.onDeleteForMe != null)
+              ListTile(
+                leading: const Icon(Icons.delete_outline, color: AirColors.error, size: 20),
+                title: const Text('Delete for me', style: TextStyle(color: AirColors.error)),
+                onTap: () {
+                  Navigator.pop(context);
+                  widget.onDeleteForMe!.call();
                 },
               ),
             ListTile(

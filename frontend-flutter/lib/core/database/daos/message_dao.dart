@@ -62,4 +62,16 @@ class MessageDao {
     );
     return maps.map((m) => ChatMessage.fromMap(m)).toList();
   }
+
+  Future<ChatMessage?> getMessageById(String id) async {
+    final db = await AppDatabase.instance;
+    final maps = await db.query('messages', where: 'id = ?', whereArgs: [id], limit: 1);
+    if (maps.isEmpty) return null;
+    return ChatMessage.fromMap(maps.first);
+  }
+
+  Future<void> deleteMessage(String id) async {
+    final db = await AppDatabase.instance;
+    await db.delete('messages', where: 'id = ?', whereArgs: [id]);
+  }
 }
