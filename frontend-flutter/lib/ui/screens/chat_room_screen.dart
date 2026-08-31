@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
+
 import '../../core/crypto/key_store.dart';
 import '../../core/database/daos/chat_dao.dart';
 import '../../core/database/daos/message_dao.dart';
@@ -77,7 +79,8 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
 
   void _onScroll() {
     if (!_scrollController.hasClients) return;
-    final nearBottom = _scrollController.position.maxScrollExtent -
+    final nearBottom =
+        _scrollController.position.maxScrollExtent -
             _scrollController.position.pixels <
         400;
     if (nearBottom != !_showFab) {
@@ -112,9 +115,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   /// Removes keys for messages that are far from the current scroll position.
   void _evictStaleKeys() {
     if (_messageKeys.length <= _maxMessageKeys) return;
-    final messages = ref.read(activeChatMessagesProvider(
-      buildChatId(_myUid!, widget.contactUid),
-    ));
+    final messages = ref.read(
+      activeChatMessagesProvider(buildChatId(_myUid!, widget.contactUid)),
+    );
     final visibleIds = messages.take(200).map((m) => m.id).toSet();
     _messageKeys.keys
         .where((id) => !visibleIds.contains(id))
@@ -130,13 +133,17 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
       MessageRouter.openChatId = chatId;
       await NotificationService.instance.cancelForChat(widget.contactUid);
       // Quick reply typed on the notification card while app was alive.
-      final pendingReply = NotificationService.consumePendingReply(widget.contactUid);
+      final pendingReply = NotificationService.consumePendingReply(
+        widget.contactUid,
+      );
       if (pendingReply != null && pendingReply.isNotEmpty) {
-        ref.read(activeChatMessagesProvider(chatId).notifier).sendTextMessage(
-          recipientUid: widget.contactUid,
-          recipientPublicKeyBase64: widget.contactPublicKey,
-          text: pendingReply,
-        );
+        ref
+            .read(activeChatMessagesProvider(chatId).notifier)
+            .sendTextMessage(
+              recipientUid: widget.contactUid,
+              recipientPublicKeyBase64: widget.contactPublicKey,
+              text: pendingReply,
+            );
       }
       // Existing delivered messages become read once this chat is open.
       await ref
@@ -153,20 +160,24 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     // Recompute thread preview (last remaining message or empty)
     final remaining = await MessageDao().getMessagesForChat(chatId, limit: 1);
     if (remaining.isEmpty) {
-      await ChatDao().insertOrUpdateChat(ChatThread(
-        id: chatId,
-        contactUid: widget.contactUid,
-        lastMessage: '',
-        lastMessageTime: DateTime.now().millisecondsSinceEpoch,
-      ));
+      await ChatDao().insertOrUpdateChat(
+        ChatThread(
+          id: chatId,
+          contactUid: widget.contactUid,
+          lastMessage: '',
+          lastMessageTime: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
     } else {
       final last = remaining.first;
-      await ChatDao().insertOrUpdateChat(ChatThread(
-        id: chatId,
-        contactUid: widget.contactUid,
-        lastMessage: last.text,
-        lastMessageTime: last.timestamp,
-      ));
+      await ChatDao().insertOrUpdateChat(
+        ChatThread(
+          id: chatId,
+          contactUid: widget.contactUid,
+          lastMessage: last.text,
+          lastMessageTime: last.timestamp,
+        ),
+      );
     }
     if (mounted) ref.invalidate(activeChatMessagesProvider(chatId));
     if (!mounted) return;
@@ -179,15 +190,22 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
           textColor: AirColors.accent,
           onPressed: () async {
             await MessageDao().insertMessage(snapshot);
-            final last2 = await MessageDao().getMessagesForChat(chatId, limit: 1);
+            final last2 = await MessageDao().getMessagesForChat(
+              chatId,
+              limit: 1,
+            );
             final preview = last2.isEmpty ? '' : last2.first.text;
-            final ts = last2.isEmpty ? DateTime.now().millisecondsSinceEpoch : last2.first.timestamp;
-            await ChatDao().insertOrUpdateChat(ChatThread(
-              id: chatId,
-              contactUid: widget.contactUid,
-              lastMessage: preview,
-              lastMessageTime: ts,
-            ));
+            final ts = last2.isEmpty
+                ? DateTime.now().millisecondsSinceEpoch
+                : last2.first.timestamp;
+            await ChatDao().insertOrUpdateChat(
+              ChatThread(
+                id: chatId,
+                contactUid: widget.contactUid,
+                lastMessage: preview,
+                lastMessageTime: ts,
+              ),
+            );
             if (mounted) ref.invalidate(activeChatMessagesProvider(chatId));
           },
         ),
@@ -229,12 +247,14 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     if (text.isEmpty || _myUid == null) return;
 
     final chatId = buildChatId(_myUid!, widget.contactUid);
-    ref.read(activeChatMessagesProvider(chatId).notifier).sendTextMessage(
-      recipientUid: widget.contactUid,
-      recipientPublicKeyBase64: widget.contactPublicKey,
-      text: text,
-      replyTo: _replyTo,
-    );
+    ref
+        .read(activeChatMessagesProvider(chatId).notifier)
+        .sendTextMessage(
+          recipientUid: widget.contactUid,
+          recipientPublicKeyBase64: widget.contactPublicKey,
+          text: text,
+          replyTo: _replyTo,
+        );
     _textController.clear();
     _cancelReply();
     _scrollToBottom();
@@ -267,10 +287,12 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     final chatId = buildChatId(_myUid!, widget.contactUid);
     final notifier = ref.read(activeChatMessagesProvider(chatId).notifier);
 
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-      content: Text("Encrypting & uploading…"),
-      duration: Duration(seconds: 1),
-    ));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("Encrypting & uploading…"),
+        duration: Duration(seconds: 1),
+      ),
+    );
 
     try {
       final result = await MediaPipeline.encryptAndUploadBytes(
@@ -292,10 +314,12 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
       _scrollToBottom();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text("Upload failed: $e"),
-          backgroundColor: Colors.red.shade700,
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Upload failed: $e"),
+            backgroundColor: Colors.red.shade700,
+          ),
+        );
       }
     } finally {
       _isMediaBusy = false;
@@ -317,19 +341,24 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     } catch (_) {}
   }
 
-  Future<bool> _ensurePermission(Permission permission, String deniedMsg) async {
+  Future<bool> _ensurePermission(
+    Permission permission,
+    String deniedMsg,
+  ) async {
     var status = await permission.status;
     if (status.isGranted || status.isLimited) return true;
     status = await permission.request();
     if (status.isGranted || status.isLimited) return true;
     if (status.isPermanentlyDenied && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(deniedMsg),
-        action: SnackBarAction(
-          label: 'Settings',
-          onPressed: () => openAppSettings(),
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(deniedMsg),
+          action: SnackBarAction(
+            label: 'Settings',
+            onPressed: () => openAppSettings(),
+          ),
         ),
-      ));
+      );
     }
     return false;
   }
@@ -337,7 +366,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   Future<void> _pickAndSendImage({required ImageSource source}) async {
     if (source == ImageSource.camera) {
       final ok = await _ensurePermission(
-          Permission.camera, 'Camera access is disabled. Enable it in Settings.');
+        Permission.camera,
+        'Camera access is disabled. Enable it in Settings.',
+      );
       if (!ok) return;
     } else {
       // Gallery: Permission.photos only exists on Android 13+. On older
@@ -348,8 +379,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
         final sdk = int.tryParse(await DeviceInfoHelper.androidSdkInt()) ?? 33;
         if (sdk < 33) {
           final ok = await _ensurePermission(
-              Permission.storage,
-              'Storage access is disabled. Enable it in Settings.');
+            Permission.storage,
+            'Storage access is disabled. Enable it in Settings.',
+          );
           if (!ok) return;
         }
       }
@@ -387,10 +419,12 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
       final fileSize = await file.length();
       if (fileSize > _maxFileSizeBytes) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text("File too large — maximum is 25 MB"),
-            backgroundColor: Colors.red,
-          ));
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("File too large — maximum is 25 MB"),
+              backgroundColor: Colors.red,
+            ),
+          );
         }
         return;
       }
@@ -422,9 +456,8 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
               _pickAndSendDocument();
               break;
             default:
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('$type coming soon')),
-              );
+              ScaffoldMessenger.of(context)
+                  .showSnackBar(SnackBar(content: Text('$type coming soon')));
           }
         },
       ),
@@ -436,10 +469,13 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     if (_myUid == null) {
       return Scaffold(
         backgroundColor: AirColors.background,
-        appBar: AppBar(
-          title: Text(widget.contactName),
+        appBar: AppBar(title: Text(widget.contactName)),
+        body: const Center(
+          child: CircularProgressIndicator(
+            color: AirColors.accent,
+            strokeWidth: 2,
+          ),
         ),
-        body: const Center(child: CircularProgressIndicator(color: AirColors.accent, strokeWidth: 2)),
       );
     }
 
@@ -471,7 +507,12 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
               children: [
                 Text(
                   widget.contactName,
-                  style: const TextStyle(fontSize: 16, color: AirColors.textPrimary, fontWeight: FontWeight.w600, letterSpacing: -0.2),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    color: AirColors.textPrimary,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: -0.2,
+                  ),
                 ),
                 const SizedBox(height: 1),
                 ConnectionBadge(uid: _myUid!),
@@ -496,16 +537,27 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(Icons.lock_outline, size: 40, color: AirColors.textFaint),
+                        Icon(
+                          Icons.lock_outline,
+                          size: 40,
+                          color: AirColors.textFaint,
+                        ),
                         const SizedBox(height: 14),
                         const Text(
                           "No messages yet",
-                          style: TextStyle(color: AirColors.textPrimary, fontSize: 15, fontWeight: FontWeight.w600),
+                          style: TextStyle(
+                            color: AirColors.textPrimary,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                         const SizedBox(height: 6),
                         const Text(
                           "Everything you send is end-to-end encrypted.",
-                          style: TextStyle(color: AirColors.textSecondary, fontSize: 13),
+                          style: TextStyle(
+                            color: AirColors.textSecondary,
+                            fontSize: 13,
+                          ),
                         ),
                       ],
                     ),
@@ -513,18 +565,28 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                 : ListView.builder(
                     controller: _scrollController,
                     cacheExtent: 300,
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 12,
+                    ),
                     itemCount: messages.length,
                     itemBuilder: (context, index) {
                       final msg = messages[index];
-                      final showDateDivider = index == 0 ||
-                          !_isSameDay(messages[index - 1].timestamp, msg.timestamp);
-                      final effectiveReplyText = msg.hasReply &&
+                      final showDateDivider =
+                          index == 0 ||
+                          !_isSameDay(
+                            messages[index - 1].timestamp,
+                            msg.timestamp,
+                          );
+                      final effectiveReplyText =
+                          msg.hasReply &&
                               !messages.any((m) => m.id == msg.replyToId)
                           ? 'Message deleted'
                           : msg.replyText;
                       final msgKey = _messageKeys.putIfAbsent(
-                          msg.id, () => GlobalKey());
+                        msg.id,
+                        () => GlobalKey(),
+                      );
                       return Column(
                         children: [
                           if (showDateDivider)
@@ -532,7 +594,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                               padding: const EdgeInsets.symmetric(vertical: 10),
                               child: Container(
                                 padding: const EdgeInsets.symmetric(
-                                    horizontal: 12, vertical: 4),
+                                  horizontal: 12,
+                                  vertical: 4,
+                                ),
                                 decoration: BoxDecoration(
                                   color: AirColors.surfaceLight,
                                   borderRadius: BorderRadius.circular(12),
@@ -540,7 +604,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                                 child: Text(
                                   _dateLabel(msg.timestamp),
                                   style: const TextStyle(
-                                      color: AirColors.textSecondary, fontSize: 11),
+                                    color: AirColors.textSecondary,
+                                    fontSize: 11,
+                                  ),
                                 ),
                               ),
                             ),
@@ -560,26 +626,30 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                               peerName: widget.contactName,
                               replyToId: msg.replyToId,
                               replyText: effectiveReplyText,
-                              replyType: effectiveReplyText == 'Message deleted' ? 'text' : msg.replyType,
+                              replyType: effectiveReplyText == 'Message deleted'
+                                  ? 'text'
+                                  : msg.replyType,
                               replyIsMe: msg.replyIsMe,
-                              highlighted:
-                                  _highlightedMessageId == msg.id,
+                              highlighted: _highlightedMessageId == msg.id,
                               onDeleteForMe: () => _deleteForMe(msg),
                               onSwipeReply: () => _startReply(msg),
                               onTapQuote: msg.hasReply
                                   ? () => _jumpToMessage(msg.replyToId!)
                                   : null,
-                              onRetryFailed: msg.isMe &&
-                              (msg.status == 'failed' ||
-                                  msg.status == 'expired')
+                              onRetryFailed:
+                                  msg.isMe &&
+                                      (msg.status == 'failed' ||
+                                          msg.status == 'expired')
                                   ? () => ref
-                                      .read(activeChatMessagesProvider(chatId)
-                                          .notifier)
-                                      .resendMessage(
-                                        msg,
-                                        recipientPublicKeyBase64:
-                                            widget.contactPublicKey,
-                                      )
+                                        .read(
+                                          activeChatMessagesProvider(chatId)
+                                              .notifier,
+                                        )
+                                        .resendMessage(
+                                          msg,
+                                          recipientPublicKeyBase64:
+                                              widget.contactPublicKey,
+                                        )
                                   : null,
                             ),
                           ),
@@ -616,23 +686,31 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
               label: 'Attach media',
               button: true,
               child: IconButton(
-                icon: const Icon(Icons.add_circle_outline,
-                    color: AirColors.textSecondary, size: 26),
+                icon: const Icon(
+                  Icons.add_circle_outline,
+                  color: AirColors.textSecondary,
+                  size: 26,
+                ),
                 onPressed: _openAttachmentSheet,
               ),
             ),
             Expanded(
               child: TextField(
                 controller: _textController,
-                style: const TextStyle(color: AirColors.textPrimary, fontSize: 15),
+                style: const TextStyle(
+                  color: AirColors.textPrimary,
+                  fontSize: 15,
+                ),
                 cursorColor: AirColors.accent,
                 decoration: InputDecoration(
                   hintText: "Message",
                   hintStyle: const TextStyle(color: AirColors.textFaint),
                   filled: true,
                   fillColor: AirColors.surfaceLight,
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 11,
+                  ),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(22),
                     borderSide: BorderSide.none,
@@ -648,10 +726,13 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                     onComplete: (recording) =>
                         _sendVoiceNote(recording.path, recording.duration),
                     onPermissionDenied: () {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                        content:
-                            Text("Microphone access is disabled. Enable it in Settings."),
-                      ));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            "Microphone access is disabled. Enable it in Settings.",
+                          ),
+                        ),
+                      );
                     },
                   )
                 : GestureDetector(
@@ -663,8 +744,11 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                         color: AirColors.bubbleMe,
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(Icons.arrow_upward,
-                          color: AirColors.bubbleMeText, size: 20),
+                      child: const Icon(
+                        Icons.arrow_upward,
+                        color: AirColors.bubbleMeText,
+                        size: 20,
+                      ),
                     ),
                   ),
           ],
@@ -717,7 +801,10 @@ class ReplyPreviewBar extends StatelessWidget {
             children: [
               Expanded(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
                     color: AirColors.surfaceLight,
                     border: const Border(
@@ -730,7 +817,9 @@ class ReplyPreviewBar extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        message.isMe ? 'Replying to yourself' : 'Replying to $peerName',
+                        message.isMe
+                            ? 'Replying to yourself'
+                            : 'Replying to $peerName',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
@@ -755,7 +844,11 @@ class ReplyPreviewBar extends StatelessWidget {
                 ),
               ),
               IconButton(
-                icon: const Icon(Icons.close, size: 20, color: AirColors.textSecondary),
+                icon: const Icon(
+                  Icons.close,
+                  size: 20,
+                  color: AirColors.textSecondary,
+                ),
                 onPressed: onCancel,
                 splashRadius: 20,
               ),
@@ -773,8 +866,7 @@ class _MonogramAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final letter =
-        name.isNotEmpty ? name[0].toUpperCase() : 'P';
+    final letter = name.isNotEmpty ? name[0].toUpperCase() : 'P';
     return Container(
       width: 38,
       height: 38,

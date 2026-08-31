@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'package:cryptography/cryptography.dart';
 
 class CryptoPayload {
@@ -13,16 +14,16 @@ class CryptoPayload {
   });
 
   Map<String, dynamic> toJson() => {
-        'ct': cipherText,
-        'n': nonce,
-        'epk': senderEphemeralPublicKey,
-      };
+    'ct': cipherText,
+    'n': nonce,
+    'epk': senderEphemeralPublicKey,
+  };
 
   factory CryptoPayload.fromJson(Map<String, dynamic> json) => CryptoPayload(
-        cipherText: json['ct'] ?? '',
-        nonce: json['n'] ?? '',
-        senderEphemeralPublicKey: json['epk'] ?? '',
-      );
+    cipherText: json['ct'] ?? '',
+    nonce: json['n'] ?? '',
+    senderEphemeralPublicKey: json['epk'] ?? '',
+  );
 
   String encode() => jsonEncode(toJson());
 
@@ -105,7 +106,10 @@ class SodiumEngine {
       macLength: 16,
     );
 
-    final decryptedBytes = await cipher.decrypt(secretBox, secretKey: secretKey);
+    final decryptedBytes = await cipher.decrypt(
+      secretBox,
+      secretKey: secretKey,
+    );
     return utf8.decode(decryptedBytes);
   }
 }

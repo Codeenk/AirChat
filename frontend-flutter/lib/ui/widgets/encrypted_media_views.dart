@@ -1,5 +1,7 @@
 import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+
 import '../../core/files/file_saver.dart';
 import '../../core/network/media_uploader.dart';
 import '../../core/theme/colors.dart';
@@ -77,7 +79,9 @@ class _EncryptedImageViewerState extends State<EncryptedImageViewer> {
                 width: 22,
                 height: 22,
                 child: CircularProgressIndicator(
-                    strokeWidth: 2, color: AirColors.accent),
+                  strokeWidth: 2,
+                  color: AirColors.accent,
+                ),
               ),
             ),
           );
@@ -100,22 +104,23 @@ class _EncryptedImageViewerState extends State<EncryptedImageViewer> {
   }
 
   Widget _fallback(IconData icon, String label) => Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: AirColors.surfaceLight,
-          borderRadius: BorderRadius.circular(10),
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: AirColors.surfaceLight,
+      borderRadius: BorderRadius.circular(10),
+    ),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 30, color: AirColors.textSecondary),
+        const SizedBox(height: 6),
+        Text(
+          label,
+          style: const TextStyle(color: AirColors.textSecondary, fontSize: 12),
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 30, color: AirColors.textSecondary),
-            const SizedBox(height: 6),
-            Text(label,
-                style:
-                    const TextStyle(color: AirColors.textSecondary, fontSize: 12)),
-          ],
-        ),
-      );
+      ],
+    ),
+  );
 }
 
 /// Decrypt-on-tap file tile with save/download.
@@ -156,16 +161,20 @@ class _EncryptedDocumentTileState extends State<EncryptedDocumentTile> {
       );
       final savedAs = await saveBytes(widget.fileName, bytes);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text("Decrypted & saved: $savedAs"),
-          duration: const Duration(seconds: 3),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Decrypted & saved: $savedAs"),
+            duration: const Duration(seconds: 3),
+          ),
+        );
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text("Failed to decrypt — blob may have expired"),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Failed to decrypt — blob may have expired"),
+          ),
+        );
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -184,11 +193,11 @@ class _EncryptedDocumentTileState extends State<EncryptedDocumentTile> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
         decoration: BoxDecoration(
-          color: light ? Colors.black.withOpacity(0.06) : AirColors.surfaceLight,
+          color: light
+              ? Colors.black.withOpacity(0.06)
+              : AirColors.surfaceLight,
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: light ? Colors.black12 : AirColors.border,
-          ),
+          border: Border.all(color: light ? Colors.black12 : AirColors.border),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -205,7 +214,10 @@ class _EncryptedDocumentTileState extends State<EncryptedDocumentTile> {
               child: _busy
                   ? Padding(
                       padding: const EdgeInsets.all(10),
-                      child: CircularProgressIndicator(strokeWidth: 2, color: fg),
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: fg,
+                      ),
                     )
                   : Icon(Icons.insert_drive_file_outlined, size: 24, color: fg),
             ),
@@ -221,9 +233,10 @@ class _EncryptedDocumentTileState extends State<EncryptedDocumentTile> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                        color: fg,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500),
+                      color: fg,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
                   const SizedBox(height: 2),
                   Text(

@@ -1,9 +1,12 @@
 import 'dart:convert';
+
 import 'package:http/http.dart' as http;
+
 import '../crypto/key_store.dart';
 
 class ApiClient {
-  static const String defaultBaseUrl = "https://airchat-relay.malandkar-sarvesh1.workers.dev";
+  static const String defaultBaseUrl =
+      "https://airchat-relay.malandkar-sarvesh1.workers.dev";
   final String baseUrl;
 
   const ApiClient({this.baseUrl = defaultBaseUrl});
@@ -19,22 +22,28 @@ class ApiClient {
   }) async {
     try {
       final uri = Uri.parse("$baseUrl/api/identity/register");
-      final response = await http.post(
-        uri,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'uid': uid,
-          'username': username,
-          'identityPublicKey': identityPublicKey,
-          'signedPrekey': signedPrekey,
-          'prekeySignature': prekeySignature,
-          if (signingPublicKey != null) 'signingPublicKey': signingPublicKey,
-          if (signingSignature != null) 'signingSignature': signingSignature,
-        }),
-      ).timeout(const Duration(seconds: 10));
+      final response = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'uid': uid,
+              'username': username,
+              'identityPublicKey': identityPublicKey,
+              'signedPrekey': signedPrekey,
+              'prekeySignature': prekeySignature,
+              if (signingPublicKey != null)
+                'signingPublicKey': signingPublicKey,
+              if (signingSignature != null)
+                'signingSignature': signingSignature,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
       if (response.statusCode != 200) {
         // ignore: avoid_print
-        print('[AirChat] register HTTP ${response.statusCode}: ${response.body}');
+        print(
+          '[AirChat] register HTTP ${response.statusCode}: ${response.body}',
+        );
       }
       return response.statusCode == 200;
     } catch (e) {
@@ -49,9 +58,11 @@ class ApiClient {
     try {
       final uri = Uri.parse("$baseUrl/api/identity/test-push");
       final response = await http
-          .post(uri,
-              headers: {'Content-Type': 'application/json'},
-              body: jsonEncode({'uid': uid}))
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'uid': uid}),
+          )
           .timeout(const Duration(seconds: 10));
       return response.statusCode == 200;
     } catch (_) {
@@ -85,10 +96,7 @@ class ApiClient {
       final response = await http.post(
         uri,
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'uid': uid,
-          'fcmToken': token,
-        }),
+        body: jsonEncode({'uid': uid, 'fcmToken': token}),
       );
       return response.statusCode == 200;
     } catch (_) {

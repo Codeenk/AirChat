@@ -37,8 +37,10 @@ class UpdateChecker {
       final current = _normalize(info.version);
 
       final res = await http
-          .get(Uri.parse(_apiUrl),
-              headers: {'Accept': 'application/vnd.github.v3+json'})
+          .get(
+            Uri.parse(_apiUrl),
+            headers: {'Accept': 'application/vnd.github.v3+json'},
+          )
           .timeout(const Duration(seconds: 8));
       if (res.statusCode != 200) return null;
 
@@ -88,18 +90,22 @@ class UpdateChecker {
   /// Streams the APK to app-specific external storage with progress 0.0–1.0,
   /// then hands the file to the Android package installer.
   static Future<bool> downloadAndInstall(
-      UpdateInfo info, void Function(double progress) onProgress) async {
+    UpdateInfo info,
+    void Function(double progress) onProgress,
+  ) async {
     http.Client? client;
     try {
       client = http.Client();
-      final res =
-          await client.send(http.Request('GET', Uri.parse(info.downloadUrl)));
+      final res = await client.send(
+        http.Request('GET', Uri.parse(info.downloadUrl)),
+      );
       if (res.statusCode != 200) return false;
 
       final total = res.contentLength ?? 0;
       final dir = await _downloadDir();
-      final file =
-          File('${dir.path}/airchat_update_${info.normalizedVersion}.apk');
+      final file = File(
+        '${dir.path}/airchat_update_${info.normalizedVersion}.apk',
+      );
       final sink = file.openWrite();
 
       var received = 0;
@@ -111,8 +117,10 @@ class UpdateChecker {
       await sink.flush();
       await sink.close();
 
-      final result = await OpenFilex.open(file.path,
-          type: 'application/vnd.android.package-archive');
+      final result = await OpenFilex.open(
+        file.path,
+        type: 'application/vnd.android.package-archive',
+      );
       return result.type == ResultType.done;
     } catch (_) {
       return false;

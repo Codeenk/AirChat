@@ -7,6 +7,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:permission_handler/permission_handler.dart' as ph;
+
 import 'notification_service.dart';
 import '../crash/crash_reporter.dart';
 import '../network/api_client.dart';
@@ -16,8 +17,10 @@ import '../database/app_database.dart';
 import '../database/daos/chat_dao.dart';
 import '../database/daos/contact_dao.dart';
 import '../database/daos/message_dao.dart';
+
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:native_bridge/native_bridge.dart';
+
 import '../../models/chat_thread.dart';
 import '../../models/message_payload.dart';
 
@@ -108,8 +111,10 @@ Future<String> _resolveSenderName(String? senderUid) async {
   return 'peer_${senderUid.length > 8 ? senderUid.substring(senderUid.length - 8) : senderUid}';
 }
 
-Future<void> _showWakeNotification(RemoteMessage message,
-    {String? bodyOverride}) async {
+Future<void> _showWakeNotification(
+  RemoteMessage message, {
+  String? bodyOverride,
+}) async {
   final data = message.data;
   if (data['type'] != 'wake') return;
 
@@ -169,7 +174,9 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       debugPrint('[AirChat][bg] enrich failed: $e');
     }
     await _showWakeNotification(message, bodyOverride: realText);
-    debugPrint('[AirChat][bg] wake notification shown (real=${realText != null})');
+    debugPrint(
+      '[AirChat][bg] wake notification shown (real=${realText != null})',
+    );
   } catch (e, st) {
     debugPrint('[AirChat][bg] handler failed: $e\n$st');
     CrashReporter.recordError(error: e, stackTrace: st, source: 'fcm-bg');
@@ -181,8 +188,9 @@ Future<void> _handleSelfTest() async {
   try {
     const storage = FlutterSecureStorage();
     await storage.write(
-        key: 'airchat_last_push_verified',
-        value: DateTime.now().millisecondsSinceEpoch.toString());
+      key: 'airchat_last_push_verified',
+      value: DateTime.now().millisecondsSinceEpoch.toString(),
+    );
     debugPrint('[AirChat][bg] self-test push received');
   } catch (_) {}
 }
@@ -217,7 +225,11 @@ Future<void> _handleDeliveryFailed(Map<String, dynamic> data) async {
     debugPrint('[AirChat][bg] marked ${packetIds.length} messages expired');
   } catch (e, st) {
     debugPrint('[AirChat][bg] delivery_failed handling failed: $e');
-    CrashReporter.recordError(error: e, stackTrace: st, source: 'delivery-failed');
+    CrashReporter.recordError(
+      error: e,
+      stackTrace: st,
+      source: 'delivery-failed',
+    );
   }
 }
 
@@ -244,87 +256,103 @@ Future<String?> _fetchQueuedMessage(RemoteMessage message) async {
   });
 
   debugPrint('[AirChat][bg] fetch: raw WS connect as $myUid');
-  final channel =
-      WebSocketChannel.connect(Uri.parse(
-          'wss://airchat-relay.malandkar-sarvesh1.workers.dev/tunnel?uid=$myUid'));
-  channel.ready.then((_) {
-    debugPrint('[AirChat][bg] WS READY');
-  }).catchError((e) {
-    debugPrint('[AirChat][bg] WS READY FAILED: $e');
-  });
-  late final StreamSubscription<dynamic> sub;
-  sub = channel.stream.listen((raw) {
-    final rawStr = raw is String ? raw : utf8.decode(raw as List<int>);
-    try {
-      final msg = jsonDecode(rawStr) as Map<String, dynamic>;
-      if (msg['type'] != 'direct_message') return;
-      if (msg['senderUid'] != senderUid) return;
-
-      final cryptoPayload = CryptoPayload.decode(msg['payload'] as String);
-      Future(() async {
-        final decrypted = await engine.decryptMessage(
-          payload: cryptoPayload,
-          recipientKeyPair: keyPair,
-        );
-        final decoded = jsonDecode(decrypted);
-        final text = (decoded['text'] as String?) ?? '';
-        final type = (decoded['type'] as String?) ?? 'text';
-        final packetId = msg['packetId'] as String?;
-        final timestamp = (msg['timestamp'] as int?) ??
-            DateTime.now().millisecondsSinceEpoch;
-
-        final chatId = buildChatId(myUid, senderUid);
-
-        // Persist so the app shows it on next open (idempotent by packetId).
-        await MessageDao().insertMessage(ChatMessage(
-          id: packetId ?? 'bg_$timestamp',
-          chatId: chatId,
-          senderUid: senderUid,
-          recipientUid: myUid,
-          text: text,
-          type: type,
-          timestamp: timestamp,
-          isMe: false,
-          status: 'delivered',
-          replyToId: (decoded['replyTo']?['id'] as String?),
-          replyText: (decoded['replyTo']?['text'] as String?) ?? '',
-          replyType: (decoded['replyTo']?['type'] as String?) ?? 'text',
-          replyIsMe: decoded['replyTo']?['isMe'] as bool?,
-        ));
-        await ChatDao().updatePreviewPreservingUnread(ChatThread(
-          id: chatId,
-          contactUid: senderUid,
-          lastMessage: text.isEmpty ? '\u{1F4CE} $type' : text,
-          lastMessageTime: timestamp,
-        ));
-        await ChatDao().incrementUnread(chatId);
-        // Ack so the relay deletes the queued copy.
-        channel.sink.add(jsonEncode({
-          'action': 'ack',
-          if (packetId != null) 'packetId': packetId,
-          'senderUid': senderUid,
-        }));
-        if (!completer.isCompleted) {
-          completer.complete(text.isEmpty ? '\u{1F4CE} $type' : text);
-        }
-      }).catchError((e) {
-        debugPrint('[AirChat][bg] decrypt/persist failed: $e');
+  final channel = WebSocketChannel.connect(
+    Uri.parse(
+      'wss://airchat-relay.malandkar-sarvesh1.workers.dev/tunnel?uid=$myUid',
+    ),
+  );
+  channel.ready
+      .then((_) {
+        debugPrint('[AirChat][bg] WS READY');
+      })
+      .catchError((e) {
+        debugPrint('[AirChat][bg] WS READY FAILED: $e');
       });
-    } catch (e) {
-      debugPrint('[AirChat][bg] ws msg processing failed: $e');
-    }
-  }, onError: (e) {
-    if (!completer.isCompleted) completer.complete(null);
-  }, onDone: () {
-    if (!completer.isCompleted) completer.complete(null);
-  });
+  late final StreamSubscription<dynamic> sub;
+  sub = channel.stream.listen(
+    (raw) {
+      final rawStr = raw is String ? raw : utf8.decode(raw as List<int>);
+      try {
+        final msg = jsonDecode(rawStr) as Map<String, dynamic>;
+        if (msg['type'] != 'direct_message') return;
+        if (msg['senderUid'] != senderUid) return;
+
+        final cryptoPayload = CryptoPayload.decode(msg['payload'] as String);
+        Future(() async {
+          final decrypted = await engine.decryptMessage(
+            payload: cryptoPayload,
+            recipientKeyPair: keyPair,
+          );
+          final decoded = jsonDecode(decrypted);
+          final text = (decoded['text'] as String?) ?? '';
+          final type = (decoded['type'] as String?) ?? 'text';
+          final packetId = msg['packetId'] as String?;
+          final timestamp =
+              (msg['timestamp'] as int?) ??
+              DateTime.now().millisecondsSinceEpoch;
+
+          final chatId = buildChatId(myUid, senderUid);
+
+          // Persist so the app shows it on next open (idempotent by packetId).
+          await MessageDao().insertMessage(
+            ChatMessage(
+              id: packetId ?? 'bg_$timestamp',
+              chatId: chatId,
+              senderUid: senderUid,
+              recipientUid: myUid,
+              text: text,
+              type: type,
+              timestamp: timestamp,
+              isMe: false,
+              status: 'delivered',
+              replyToId: (decoded['replyTo']?['id'] as String?),
+              replyText: (decoded['replyTo']?['text'] as String?) ?? '',
+              replyType: (decoded['replyTo']?['type'] as String?) ?? 'text',
+              replyIsMe: decoded['replyTo']?['isMe'] as bool?,
+            ),
+          );
+          await ChatDao().updatePreviewPreservingUnread(
+            ChatThread(
+              id: chatId,
+              contactUid: senderUid,
+              lastMessage: text.isEmpty ? '\u{1F4CE} $type' : text,
+              lastMessageTime: timestamp,
+            ),
+          );
+          await ChatDao().incrementUnread(chatId);
+          // Ack so the relay deletes the queued copy.
+          channel.sink.add(
+            jsonEncode({
+              'action': 'ack',
+              if (packetId != null) 'packetId': packetId,
+              'senderUid': senderUid,
+            }),
+          );
+          if (!completer.isCompleted) {
+            completer.complete(text.isEmpty ? '\u{1F4CE} $type' : text);
+          }
+        }).catchError((e) {
+          debugPrint('[AirChat][bg] decrypt/persist failed: $e');
+        });
+      } catch (e) {
+        debugPrint('[AirChat][bg] ws msg processing failed: $e');
+      }
+    },
+    onError: (e) {
+      if (!completer.isCompleted) completer.complete(null);
+    },
+    onDone: () {
+      if (!completer.isCompleted) completer.complete(null);
+    },
+  );
 
   final result = await completer.future;
   await sub.cancel();
   try {
     await channel.sink.close();
   } catch (_) {}
-  debugPrint('[AirChat][bg] fetch result: ${result != null ? 'got text' : 'timeout'}');
+  debugPrint(
+    '[AirChat][bg] fetch result: ${result != null ? 'got text' : 'timeout'}',
+  );
   return result;
 }
-

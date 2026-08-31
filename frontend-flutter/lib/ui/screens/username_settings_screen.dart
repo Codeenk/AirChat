@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../../core/crypto/key_store.dart';
 import '../../core/network/api_client.dart';
 import '../../core/theme/colors.dart';
@@ -93,18 +94,21 @@ class _UsernameSettingsScreenState extends State<UsernameSettingsScreen> {
       }
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(registered
-            ? 'Username updated'
-            : 'Saved locally — will sync when online'),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            registered
+                ? 'Username updated'
+                : 'Saved locally — will sync when online',
+          ),
+        ),
+      );
       Navigator.pop(context);
     } catch (_) {
       if (!mounted) return;
       setState(() => _saving = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Something went wrong')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Something went wrong')));
     }
   }
 
@@ -132,7 +136,11 @@ class _UsernameSettingsScreenState extends State<UsernameSettingsScreen> {
                   const Text(
                     'This name is shown to people who scan your QR code and '
                     'to anyone you message for the first time.',
-                    style: TextStyle(color: AirColors.textSecondary, fontSize: 13, height: 1.5),
+                    style: TextStyle(
+                      color: AirColors.textSecondary,
+                      fontSize: 13,
+                      height: 1.5,
+                    ),
                   ),
                   const SizedBox(height: 20),
                   TextField(
@@ -144,7 +152,9 @@ class _UsernameSettingsScreenState extends State<UsernameSettingsScreen> {
                     style: const TextStyle(color: AirColors.textPrimary),
                     decoration: InputDecoration(
                       labelText: 'Username',
-                      labelStyle: const TextStyle(color: AirColors.textSecondary),
+                      labelStyle: const TextStyle(
+                        color: AirColors.textSecondary,
+                      ),
                       prefixText: '@',
                       prefixStyle: const TextStyle(color: AirColors.textFaint),
                       filled: true,
@@ -172,7 +182,10 @@ class _UsernameSettingsScreenState extends State<UsernameSettingsScreen> {
                     Text(
                       'UID $_currentUid',
                       textAlign: TextAlign.center,
-                      style: const TextStyle(color: AirColors.textFaint, fontSize: 11),
+                      style: const TextStyle(
+                        color: AirColors.textFaint,
+                        fontSize: 11,
+                      ),
                     ),
                   ],
                   const SizedBox(height: 20),
@@ -193,8 +206,10 @@ class _UsernameSettingsScreenState extends State<UsernameSettingsScreen> {
                             height: 18,
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
-                        : const Text('Save',
-                            style: TextStyle(fontWeight: FontWeight.w600)),
+                        : const Text(
+                            'Save',
+                            style: TextStyle(fontWeight: FontWeight.w600),
+                          ),
                   ),
                 ],
               ),

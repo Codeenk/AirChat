@@ -12,16 +12,16 @@ class Contact {
   });
 
   Map<String, dynamic> toMap() => {
-        'uid': uid,
-        'username': username,
-        'identity_public_key': identityPublicKey,
-        'created_at': createdAt,
-      };
+    'uid': uid,
+    'username': username,
+    'identity_public_key': identityPublicKey,
+    'created_at': createdAt,
+  };
 
   factory Contact.fromMap(Map<String, dynamic> map) => Contact(
-        uid: map['uid'],
-        username: map['username'],
-        identityPublicKey: map['identity_public_key'],
-        createdAt: map['created_at'],
-      );
+    uid: map['uid'],
+    username: map['username'],
+    identityPublicKey: map['identity_public_key'],
+    createdAt: map['created_at'],
+  );
 }

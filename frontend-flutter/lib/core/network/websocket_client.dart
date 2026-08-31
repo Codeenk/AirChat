@@ -51,14 +51,14 @@ class WebSocketTunnelClient {
     this.baseWsUrl = "wss://airchat-relay.malandkar-sarvesh1.workers.dev",
     required this.uid,
   }) {
-    _connectivitySub = Connectivity()
-        .onConnectivityChanged
-        .listen((results) {
-      final hasNet = results.any((r) =>
-          r == ConnectivityResult.mobile ||
-          r == ConnectivityResult.wifi ||
-          r == ConnectivityResult.ethernet ||
-          r == ConnectivityResult.vpn);
+    _connectivitySub = Connectivity().onConnectivityChanged.listen((results) {
+      final hasNet = results.any(
+        (r) =>
+            r == ConnectivityResult.mobile ||
+            r == ConnectivityResult.wifi ||
+            r == ConnectivityResult.ethernet ||
+            r == ConnectivityResult.vpn,
+      );
       if (hasNet && _state == TunnelState.disconnected && !_disposed) {
         _backoffSeconds = 3;
         connect();
@@ -81,15 +81,17 @@ class WebSocketTunnelClient {
 
       // Mark connected ONLY when the handshake actually completes.
       // Fixes the stale-'connected'-event race for late UI subscribers.
-      channel.ready.then((_) {
-        if (_disposed || !identical(_channel, channel)) return;
-        _backoffSeconds = 3; // reset backoff on success
-        _setState(TunnelState.connected);
-        _startPing();
-        _flushOutboundQueue();
-      }).catchError((_) {
-        if (identical(_channel, channel)) _handleDisconnect();
-      });
+      channel.ready
+          .then((_) {
+            if (_disposed || !identical(_channel, channel)) return;
+            _backoffSeconds = 3; // reset backoff on success
+            _setState(TunnelState.connected);
+            _startPing();
+            _flushOutboundQueue();
+          })
+          .catchError((_) {
+            if (identical(_channel, channel)) _handleDisconnect();
+          });
 
       channel.stream.listen(
         (data) {
@@ -165,22 +167,26 @@ class WebSocketTunnelClient {
 
   void sendAck({required String packetId, required String senderUid}) {
     if (_state != TunnelState.connected) return; // ACKs are best-effort
-    _channel?.sink.add(jsonEncode({
-      'action': 'ack',
-      'packetId': packetId,
-      'senderUid': senderUid,
-    }));
+    _channel?.sink.add(
+      jsonEncode({
+        'action': 'ack',
+        'packetId': packetId,
+        'senderUid': senderUid,
+      }),
+    );
   }
 
   /// Best-effort read receipt: tells the original sender their message
   /// was seen. Only sent while the tunnel is connected.
   void sendReadReceipt({required String packetId, required String senderUid}) {
     if (_state != TunnelState.connected) return;
-    _channel?.sink.add(jsonEncode({
-      'action': 'read_receipt',
-      'packetId': packetId,
-      'senderUid': senderUid,
-    }));
+    _channel?.sink.add(
+      jsonEncode({
+        'action': 'read_receipt',
+        'packetId': packetId,
+        'senderUid': senderUid,
+      }),
+    );
   }
 
   void _flushOutboundQueue() {

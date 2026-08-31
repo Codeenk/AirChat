@@ -82,7 +82,10 @@ class GroupActions {
     ref.invalidate(groupsProvider);
     // Fan-out group_add to all (existing + new) so everyone has the new roster.
     await _broadcastGroupControl(
-        groupId: groupId, type: 'group_add', memberUids: updated);
+      groupId: groupId,
+      type: 'group_add',
+      memberUids: updated,
+    );
   }
 
   Future<void> leaveGroup(String groupId) async {
@@ -96,10 +99,11 @@ class GroupActions {
     } else {
       await dao.updateMembers(groupId, remaining);
       await _broadcastGroupControl(
-          groupId: groupId,
-          type: 'group_kick',
-          memberUids: remaining,
-          kickedUid: myUid);
+        groupId: groupId,
+        type: 'group_kick',
+        memberUids: remaining,
+        kickedUid: myUid,
+      );
     }
     ref.invalidate(groupsProvider);
   }
@@ -135,7 +139,9 @@ class GroupActions {
           recipientPublicKey: recipientPub,
           senderKeyPair: myKeyPair,
         );
-        ref.read(websocketClientProvider(myUid)).sendPacket(
+        ref
+            .read(websocketClientProvider(myUid))
+            .sendPacket(
               recipientUid: uid,
               encryptedPayload: enc.encode(),
               packetId: 'grp_${const Uuid().v4()}',

@@ -12,11 +12,11 @@ class QrContactPayload {
   });
 
   Map<String, dynamic> toJson() => {
-        'airchat': 'v1',
-        'uid': uid,
-        'username': username,
-        'pk': identityPublicKey,
-      };
+    'airchat': 'v1',
+    'uid': uid,
+    'username': username,
+    'pk': identityPublicKey,
+  };
 
   String encode() => jsonEncode(toJson());
 

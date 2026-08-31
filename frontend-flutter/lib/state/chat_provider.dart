@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'dart:async';
+
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
+
 import '../core/crypto/key_store.dart';
 import '../models/chat_thread.dart';
 import '../models/message_payload.dart';
@@ -158,8 +160,10 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
   }
 
   /// Re-attempt delivery of a failed message (same id → replaces DB row).
-  Future<void> resendMessage(ChatMessage msg,
-      {required String recipientPublicKeyBase64}) async {
+  Future<void> resendMessage(
+    ChatMessage msg, {
+    required String recipientPublicKeyBase64,
+  }) async {
     final senderUid = await KeyStore.getUid() ?? '';
     final senderKeyPair = await KeyStore.getKeyPair();
     if (senderKeyPair == null) return;
@@ -170,9 +174,7 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     final updated = [...state];
     updated[idx] = msg.copyWith(status: 'sending');
     state = updated;
-    await ref
-        .read(messageDaoProvider)
-        .updateMessageStatus(msg.id, 'sending');
+    await ref.read(messageDaoProvider).updateMessageStatus(msg.id, 'sending');
 
     try {
       final encryptedPayload = await _encryptMessagePayload(
@@ -206,7 +208,9 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     required SimpleKeyPair senderKeyPair,
   }) async {
     final engine = ref.read(sodiumEngineProvider);
-    final recipientPubKey = await engine.importPublicKey(recipientPublicKeyBase64);
+    final recipientPubKey = await engine.importPublicKey(
+      recipientPublicKeyBase64,
+    );
 
     final messageJson = jsonEncode({
       'text': text,
@@ -261,15 +265,20 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     await ref.read(messageDaoProvider).insertMessage(message);
     state = [...state, message];
 
-    await ref.read(chatDaoProvider).insertOrUpdateChat(ChatThread(
-      id: activeChatId,
-      contactUid: recipientUid,
-      lastMessage: text,
-      lastMessageTime: message.timestamp,
-    ));
+    await ref
+        .read(chatDaoProvider)
+        .insertOrUpdateChat(
+          ChatThread(
+            id: activeChatId,
+            contactUid: recipientUid,
+            lastMessage: text,
+            lastMessageTime: message.timestamp,
+          ),
+        );
 
     // Refresh home list preview immediately (outgoing)
-    ref.read(refreshBusProvider)
+    ref
+        .read(refreshBusProvider)
         .fire(RefreshEvent(type: 'messages', chatId: activeChatId));
 
     final encryptedPayload = await _encryptMessagePayload(
@@ -326,15 +335,20 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     await ref.read(messageDaoProvider).insertMessage(message);
     state = [...state, message];
 
-    await ref.read(chatDaoProvider).insertOrUpdateChat(ChatThread(
-      id: activeChatId,
-      contactUid: recipientUid,
-      lastMessage: text,
-      lastMessageTime: message.timestamp,
-    ));
+    await ref
+        .read(chatDaoProvider)
+        .insertOrUpdateChat(
+          ChatThread(
+            id: activeChatId,
+            contactUid: recipientUid,
+            lastMessage: text,
+            lastMessageTime: message.timestamp,
+          ),
+        );
 
     // Refresh home list preview immediately (outgoing)
-    ref.read(refreshBusProvider)
+    ref
+        .read(refreshBusProvider)
         .fire(RefreshEvent(type: 'messages', chatId: activeChatId));
 
     final encryptedPayload = await _encryptMessagePayload(
@@ -359,15 +373,19 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
 }
 
 final activeChatMessagesProvider =
-    StateNotifierProvider.family<ChatStateNotifier, List<ChatMessage>, String>(
-        (ref, chatId) {
-  return ChatStateNotifier(ref, chatId);
-});
+    StateNotifierProvider.family<ChatStateNotifier, List<ChatMessage>, String>((
+      ref,
+      chatId,
+    ) {
+      return ChatStateNotifier(ref, chatId);
+    });
 
 /// Reactive home list: initial load, then re-emits on every bus event
 /// (new incoming message, status change) so previews/timestamps update live.
 /// Uses a single JOIN query to embed contact usernames — no N+1 queries.
-final chatThreadsProvider = StreamProvider.autoDispose<List<ChatThread>>((ref) async* {
+final chatThreadsProvider = StreamProvider.autoDispose<List<ChatThread>>((
+  ref,
+) async* {
   final chatDao = ref.watch(chatDaoProvider);
   yield await chatDao.getAllChatsWithContacts();
 

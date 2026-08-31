@@ -1,6 +1,8 @@
 import 'dart:convert';
+
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
 import 'sodium_engine.dart';
 
 class KeyStore {
@@ -58,13 +60,22 @@ class KeyStore {
 
     await _storage.write(key: _keyUid, value: uid);
     await _storage.write(key: _keyUsername, value: username);
-    await _storage.write(key: _keyPrivateKey, value: base64Encode(privateKeyBytes));
+    await _storage.write(
+      key: _keyPrivateKey,
+      value: base64Encode(privateKeyBytes),
+    );
     await _storage.write(key: _keyPublicKey, value: base64Encode(pubKey.bytes));
     if (signingPublicKeyHex != null) {
-      await _storage.write(key: _keySigningPublicKey, value: signingPublicKeyHex);
+      await _storage.write(
+        key: _keySigningPublicKey,
+        value: signingPublicKeyHex,
+      );
     }
     if (signingSignatureHex != null) {
-      await _storage.write(key: _keySigningSignature, value: signingSignatureHex);
+      await _storage.write(
+        key: _keySigningSignature,
+        value: signingSignatureHex,
+      );
     }
   }
 
@@ -75,6 +86,7 @@ class KeyStore {
       await _storage.write(key: _keyUsername, value: username);
     } catch (_) {}
   }
+
   static Future<String?> getPublicKey() async => await _safeRead(_keyPublicKey);
   static Future<String?> getSigningPublicKey() async =>
       await _safeRead(_keySigningPublicKey);
@@ -119,8 +131,14 @@ class KeyStore {
     final privateKeyBytes = await keyPair.extractPrivateKeyBytes();
     final pubKey = await keyPair.extractPublicKey();
 
-    await _storage.write(key: _keySigningPrivateKey, value: _bytesToHex(privateKeyBytes));
-    await _storage.write(key: _keySigningPublicKey, value: _bytesToHex(pubKey.bytes));
+    await _storage.write(
+      key: _keySigningPrivateKey,
+      value: _bytesToHex(privateKeyBytes),
+    );
+    await _storage.write(
+      key: _keySigningPublicKey,
+      value: _bytesToHex(pubKey.bytes),
+    );
   }
 
   static Future<bool> hasIdentity() async {

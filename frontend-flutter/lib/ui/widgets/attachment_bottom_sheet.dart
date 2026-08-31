@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
+
 import '../../core/theme/colors.dart';
 
 class AttachmentBottomSheet extends StatelessWidget {
   final Function(String type) onOptionSelected;
 
   const AttachmentBottomSheet({Key? key, required this.onOptionSelected})
-      : super(key: key);
+    : super(key: key);
 
   Widget _buildItem({
     required IconData icon,
@@ -33,8 +34,10 @@ class AttachmentBottomSheet extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               label,
-              style:
-                  const TextStyle(color: AirColors.textSecondary, fontSize: 12),
+              style: const TextStyle(
+                color: AirColors.textSecondary,
+                fontSize: 12,
+              ),
             ),
           ],
         ),

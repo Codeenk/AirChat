@@ -1,15 +1,13 @@
 import 'package:flutter/material.dart';
+
 import '../../core/theme/colors.dart';
 
 class MediaPreviewScreen extends StatelessWidget {
   final String fileName;
   final String? imagePath;
 
-  const MediaPreviewScreen({
-    Key? key,
-    required this.fileName,
-    this.imagePath,
-  }) : super(key: key);
+  const MediaPreviewScreen({Key? key, required this.fileName, this.imagePath})
+    : super(key: key);
 
   @override
   Widget build(BuildContext context) {
@@ -28,7 +26,11 @@ class MediaPreviewScreen extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.lock_outline, size: 44, color: AirColors.textFaint),
+            const Icon(
+              Icons.lock_outline,
+              size: 44,
+              color: AirColors.textFaint,
+            ),
             const SizedBox(height: 12),
             const Text(
               "Decrypted end-to-end encrypted media",
@@ -44,7 +46,11 @@ class MediaPreviewScreen extends StatelessWidget {
                 border: Border.all(color: AirColors.border),
               ),
               child: const Center(
-                child: Icon(Icons.image_outlined, size: 72, color: AirColors.textFaint),
+                child: Icon(
+                  Icons.image_outlined,
+                  size: 72,
+                  color: AirColors.textFaint,
+                ),
               ),
             ),
           ],

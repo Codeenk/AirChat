@@ -1,4 +1,5 @@
 import 'package:sqflite_sqlcipher/sqflite.dart';
+
 import '../app_database.dart';
 import '../../../models/chat_thread.dart';
 
@@ -14,7 +15,10 @@ class ChatDao {
 
   Future<List<ChatThread>> getAllChats() async {
     final db = await AppDatabase.instance;
-    final maps = await db.query('chat_threads', orderBy: 'last_message_time DESC');
+    final maps = await db.query(
+      'chat_threads',
+      orderBy: 'last_message_time DESC',
+    );
     return maps.map((m) => ChatThread.fromMap(m)).toList();
   }
 
@@ -35,18 +39,25 @@ class ChatDao {
   /// (A blind REPLACE would reset the badge to 0 on every incoming message.)
   Future<void> updatePreviewPreservingUnread(ChatThread chat) async {
     final db = await AppDatabase.instance;
-    await db.rawInsert('''
+    await db.rawInsert(
+      '''
       INSERT INTO chat_threads (id, contact_uid, last_message, last_message_time, unread_count)
       VALUES (?, ?, ?, ?, 0)
       ON CONFLICT(id) DO UPDATE SET
         last_message = excluded.last_message,
         last_message_time = excluded.last_message_time
-    ''', [chat.id, chat.contactUid, chat.lastMessage, chat.lastMessageTime]);
+    ''',
+      [chat.id, chat.contactUid, chat.lastMessage, chat.lastMessageTime],
+    );
   }
 
   Future<ChatThread?> getChatById(String chatId) async {
     final db = await AppDatabase.instance;
-    final maps = await db.query('chat_threads', where: 'id = ?', whereArgs: [chatId]);
+    final maps = await db.query(
+      'chat_threads',
+      where: 'id = ?',
+      whereArgs: [chatId],
+    );
     if (maps.isNotEmpty) return ChatThread.fromMap(maps.first);
     return null;
   }

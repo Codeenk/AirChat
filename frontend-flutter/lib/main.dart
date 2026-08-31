@@ -5,6 +5,7 @@ import 'dart:ui' show PlatformDispatcher;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
+
 import 'core/crash/crash_reporter.dart';
 import 'core/crypto/key_store.dart';
 import 'core/crypto/signing_engine.dart';
@@ -19,43 +20,53 @@ import 'state/connection_provider.dart';
 import 'ui/screens/home_chat_list_screen.dart';
 
 void main() async {
-  await runZonedGuarded<Future<void>>(() async {
-    WidgetsFlutterBinding.ensureInitialized();
+  await runZonedGuarded<Future<void>>(
+    () async {
+      WidgetsFlutterBinding.ensureInitialized();
 
-    FlutterError.onError = (details) {
-      FlutterError.presentError(details);
-      CrashReporter.recordError(
-        error: details.exception,
-        stackTrace: details.stack,
-        source: 'flutter',
+      FlutterError.onError = (details) {
+        FlutterError.presentError(details);
+        CrashReporter.recordError(
+          error: details.exception,
+          stackTrace: details.stack,
+          source: 'flutter',
+        );
+      };
+      PlatformDispatcher.instance.onError = (error, stack) {
+        CrashReporter.recordError(
+          error: error,
+          stackTrace: stack,
+          source: 'platform',
+        );
+        return true;
+      };
+
+      await CrashReporter.initialize();
+
+      final container = ProviderContainer();
+
+      final uid = await _loadLocalIdentity(container);
+
+      runApp(ProviderScope(parent: container, child: const AirChatApp()));
+
+      unawaited(
+        _initializeServices(container, uid).catchError((e, s) {
+          CrashReporter.recordError(
+            error: e,
+            stackTrace: s,
+            source: 'startup-services',
+          );
+        }),
       );
-    };
-    PlatformDispatcher.instance.onError = (error, stack) {
-      CrashReporter.recordError(error: error, stackTrace: stack, source: 'platform');
-      return true;
-    };
-
-    await CrashReporter.initialize();
-
-    final container = ProviderContainer();
-
-    final uid = await _loadLocalIdentity(container);
-
-    runApp(
-      ProviderScope(
-        parent: container,
-        child: const AirChatApp(),
-      ),
-    );
-
-    unawaited(
-      _initializeServices(container, uid).catchError((e, s) {
-        CrashReporter.recordError(error: e, stackTrace: s, source: 'startup-services');
-      }),
-    );
-  }, (error, stack) {
-    CrashReporter.recordError(error: error, stackTrace: stack, source: 'zone');
-  });
+    },
+    (error, stack) {
+      CrashReporter.recordError(
+        error: error,
+        stackTrace: stack,
+        source: 'zone',
+      );
+    },
+  );
 }
 
 Future<String> _loadLocalIdentity(ProviderContainer container) async {
@@ -67,16 +78,19 @@ Future<String> _loadLocalIdentity(ProviderContainer container) async {
 
     final signingEngine = SigningEngine();
     final signingKeyPair = await signingEngine.generateSigningKeyPair();
-    final signingPublicKeyHex =
-        await signingEngine.exportSigningPublicKeyHex(signingKeyPair);
+    final signingPublicKeyHex = await signingEngine.exportSigningPublicKeyHex(
+      signingKeyPair,
+    );
 
     final newUid =
         'usr_${const Uuid().v4().replaceAll('-', '').substring(0, 20)}';
     final username = 'airchat_${newUid.substring(newUid.length - 8)}';
 
     final identityPublicKey = await engine.exportPublicKey(keyPair);
-    final signingSignature =
-        await signingEngine.signHex(identityPublicKey, signingKeyPair);
+    final signingSignature = await signingEngine.signHex(
+      identityPublicKey,
+      signingKeyPair,
+    );
 
     await KeyStore.saveUserIdentity(
       uid: newUid,
@@ -98,7 +112,9 @@ Future<String> _loadLocalIdentity(ProviderContainer container) async {
 }
 
 Future<void> _initializeServices(
-    ProviderContainer container, String uid) async {
+  ProviderContainer container,
+  String uid,
+) async {
   if (uid.isEmpty) return;
 
   try {
@@ -109,7 +125,12 @@ Future<void> _initializeServices(
 
   container.read(messageRouterProvider(uid));
 
-  unawaited(Future.delayed(const Duration(seconds: 2), () => _requeuePending(container, uid)));
+  unawaited(
+    Future.delayed(
+      const Duration(seconds: 2),
+      () => _requeuePending(container, uid),
+    ),
+  );
 
   try {
     final pubKey = await KeyStore.getPublicKey() ?? '';
@@ -196,7 +217,8 @@ class AirChatApp extends ConsumerStatefulWidget {
   ConsumerState<AirChatApp> createState() => _AirChatAppState();
 }
 
-class _AirChatAppState extends ConsumerState<AirChatApp> with WidgetsBindingObserver {
+class _AirChatAppState extends ConsumerState<AirChatApp>
+    with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
@@ -250,7 +272,11 @@ class _AirChatAppState extends ConsumerState<AirChatApp> with WidgetsBindingObse
           ),
           iconTheme: IconThemeData(color: AirColors.textPrimary),
         ),
-        dividerTheme: const DividerThemeData(color: AirColors.divider, thickness: 1, space: 1),
+        dividerTheme: const DividerThemeData(
+          color: AirColors.divider,
+          thickness: 1,
+          space: 1,
+        ),
         snackBarTheme: SnackBarThemeData(
           backgroundColor: AirColors.surfaceElevated,
           contentTextStyle: const TextStyle(color: AirColors.textPrimary),
@@ -262,14 +288,13 @@ class _AirChatAppState extends ConsumerState<AirChatApp> with WidgetsBindingObse
         ),
         dialogTheme: DialogThemeData(
           backgroundColor: AirColors.surface,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
         ),
       ),
       builder: (context, child) => Stack(
-        children: [
-          child ?? const SizedBox.shrink(),
-          const _ReconnectBanner(),
-        ],
+        children: [child ?? const SizedBox.shrink(), const _ReconnectBanner()],
       ),
       home: const HomeChatListScreen(),
     );
@@ -302,12 +327,19 @@ class _ReconnectBanner extends ConsumerWidget {
                 width: 12,
                 height: 12,
                 child: CircularProgressIndicator(
-                    strokeWidth: 1.6, color: AirColors.textSecondary),
+                  strokeWidth: 1.6,
+                  color: AirColors.textSecondary,
+                ),
               ),
               const SizedBox(width: 8),
               Text(
-                state == TunnelState.connecting ? 'Connecting…' : 'Reconnecting…',
-                style: const TextStyle(color: AirColors.textSecondary, fontSize: 12),
+                state == TunnelState.connecting
+                    ? 'Connecting…'
+                    : 'Reconnecting…',
+                style: const TextStyle(
+                  color: AirColors.textSecondary,
+                  fontSize: 12,
+                ),
               ),
             ],
           ),

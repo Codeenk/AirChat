@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:io' as io;
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common/sqlite_api.dart' show OpenDatabaseOptions;
-import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart' show databaseFactoryFfiWeb;
+import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart'
+    show databaseFactoryFfiWeb;
 import 'package:sqflite_sqlcipher/sqflite.dart';
+
 import '../crypto/key_store.dart';
 
 class AppDatabase {
@@ -93,7 +96,8 @@ class AppDatabase {
       )
     ''');
     await db.execute(
-        'CREATE INDEX idx_chat_threads_time ON chat_threads(last_message_time DESC)');
+      'CREATE INDEX idx_chat_threads_time ON chat_threads(last_message_time DESC)',
+    );
 
     await db.execute('''
       CREATE TABLE groups (
@@ -127,13 +131,18 @@ class AppDatabase {
       )
     ''');
     await db.execute(
-        'CREATE INDEX idx_messages_chat_time ON messages(chat_id, timestamp ASC)');
+      'CREATE INDEX idx_messages_chat_time ON messages(chat_id, timestamp ASC)',
+    );
     await db.execute(
-        'CREATE INDEX IF NOT EXISTS idx_messages_group ON messages(group_id, timestamp ASC)');
+      'CREATE INDEX IF NOT EXISTS idx_messages_group ON messages(group_id, timestamp ASC)',
+    );
   }
 
   static Future<void> _onUpgrade(
-      Database db, int oldVersion, int newVersion) async {
+    Database db,
+    int oldVersion,
+    int newVersion,
+  ) async {
     if (oldVersion < 2) {
       // v2: quoted-reply columns — idempotent for crash-recovery (ALTER has no IF NOT EXISTS).
       for (final sql in [
@@ -152,9 +161,11 @@ class AppDatabase {
     if (oldVersion < 3) {
       // v3: performance indexes for chat_id+timestamp and thread ordering.
       await db.execute(
-          'CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages(chat_id, timestamp ASC)');
+        'CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages(chat_id, timestamp ASC)',
+      );
       await db.execute(
-          'CREATE INDEX IF NOT EXISTS idx_chat_threads_time ON chat_threads(last_message_time DESC)');
+        'CREATE INDEX IF NOT EXISTS idx_chat_threads_time ON chat_threads(last_message_time DESC)',
+      );
     }
     if (oldVersion < 4) {
       // v4: groups + group columns on messages (all nullable — 1:1 flows untouched).
@@ -177,7 +188,8 @@ class AppDatabase {
         }
       }
       await db.execute(
-          'CREATE INDEX IF NOT EXISTS idx_messages_group ON messages(group_id, timestamp ASC)');
+        'CREATE INDEX IF NOT EXISTS idx_messages_group ON messages(group_id, timestamp ASC)',
+      );
     }
   }
 

@@ -14,14 +14,15 @@ class MediaAttachment {
   });
 
   Map<String, dynamic> toJson() => {
-        'fileKey': fileKey,
-        'secretKeyHex': secretKeyHex,
-        'nonceHex': nonceHex,
-        'type': type,
-        'fileName': fileName,
-      };
+    'fileKey': fileKey,
+    'secretKeyHex': secretKeyHex,
+    'nonceHex': nonceHex,
+    'type': type,
+    'fileName': fileName,
+  };
 
-  factory MediaAttachment.fromJson(Map<String, dynamic> json) => MediaAttachment(
+  factory MediaAttachment.fromJson(Map<String, dynamic> json) =>
+      MediaAttachment(
         fileKey: json['fileKey'] ?? '',
         secretKeyHex: json['secretKeyHex'] ?? '',
         nonceHex: json['nonceHex'] ?? '',

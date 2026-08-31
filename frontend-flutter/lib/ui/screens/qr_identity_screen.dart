@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+
 import '../../core/crypto/key_store.dart';
 import '../../core/crypto/qr_payload.dart';
 import '../../core/theme/colors.dart';
@@ -95,7 +96,10 @@ class _QrIdentityScreenState extends State<QrIdentityScreen> {
                     const SizedBox(height: 6),
                     const Text(
                       "Scan to add contact & start an E2EE chat",
-                      style: TextStyle(color: AirColors.textSecondary, fontSize: 13),
+                      style: TextStyle(
+                        color: AirColors.textSecondary,
+                        fontSize: 13,
+                      ),
                     ),
                     const SizedBox(height: 28),
                     Container(
@@ -116,8 +120,13 @@ class _QrIdentityScreenState extends State<QrIdentityScreen> {
                       style: OutlinedButton.styleFrom(
                         foregroundColor: AirColors.textPrimary,
                         side: const BorderSide(color: AirColors.border),
-                        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 18,
+                          vertical: 12,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
                       ),
                       icon: const Icon(Icons.copy_rounded, size: 16),
                       label: const Text("Copy identity"),
@@ -126,8 +135,9 @@ class _QrIdentityScreenState extends State<QrIdentityScreen> {
                         if (context.mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
-                              content:
-                                  Text("Identity copied — share it with your peer"),
+                              content: Text(
+                                "Identity copied — share it with your peer",
+                              ),
                               duration: Duration(seconds: 2),
                             ),
                           );
@@ -138,7 +148,10 @@ class _QrIdentityScreenState extends State<QrIdentityScreen> {
                     Text(
                       "UID $_uid",
                       textAlign: TextAlign.center,
-                      style: const TextStyle(color: AirColors.textFaint, fontSize: 11),
+                      style: const TextStyle(
+                        color: AirColors.textFaint,
+                        fontSize: 11,
+                      ),
                     ),
                     if (_pubKey != null && _pubKey!.isNotEmpty) ...[
                       const SizedBox(height: 8),
@@ -156,11 +169,17 @@ class _QrIdentityScreenState extends State<QrIdentityScreen> {
               : const Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    CircularProgressIndicator(color: AirColors.accent, strokeWidth: 2),
+                    CircularProgressIndicator(
+                      color: AirColors.accent,
+                      strokeWidth: 2,
+                    ),
                     SizedBox(height: 12),
                     Text(
                       "Loading identity…",
-                      style: TextStyle(color: AirColors.textSecondary, fontSize: 13),
+                      style: TextStyle(
+                        color: AirColors.textSecondary,
+                        fontSize: 13,
+                      ),
                     ),
                   ],
                 ),

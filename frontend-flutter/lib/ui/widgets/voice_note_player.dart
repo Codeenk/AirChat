@@ -81,11 +81,15 @@ class _VoiceNotePlayerState extends State<VoiceNotePlayer> {
       if (_position == Duration.zero) {
         final bytes = await _decryptBytes();
         if (bytes == null) {
-          setState(() { _loading = false; _failed = true; });
+          setState(() {
+            _loading = false;
+            _failed = true;
+          });
           return;
         }
         final tmp = File(
-            '${Directory.systemTemp.path}/airchat_voice_${DateTime.now().millisecondsSinceEpoch}.m4a');
+          '${Directory.systemTemp.path}/airchat_voice_${DateTime.now().millisecondsSinceEpoch}.m4a',
+        );
         await tmp.writeAsBytes(bytes, flush: true);
         await _player.play(DeviceFileSource(tmp.path));
       } else {
@@ -94,7 +98,11 @@ class _VoiceNotePlayerState extends State<VoiceNotePlayer> {
       }
       setState(() => _loading = false);
     } catch (_) {
-      if (mounted) setState(() { _loading = false; _failed = true; });
+      if (mounted)
+        setState(() {
+          _loading = false;
+          _failed = true;
+        });
     }
   }
 
@@ -117,10 +125,9 @@ class _VoiceNotePlayerState extends State<VoiceNotePlayer> {
     super.dispose();
   }
 
-  double get _progress =>
-      _total.inMilliseconds > 0
-          ? (_position.inMilliseconds / _total.inMilliseconds).clamp(0.0, 1.0)
-          : 0.0;
+  double get _progress => _total.inMilliseconds > 0
+      ? (_position.inMilliseconds / _total.inMilliseconds).clamp(0.0, 1.0)
+      : 0.0;
 
   @override
   Widget build(BuildContext context) {
@@ -139,10 +146,13 @@ class _VoiceNotePlayerState extends State<VoiceNotePlayer> {
             radius: 20,
             child: _loading
                 ? SizedBox(
-                    width: 16, height: 16,
+                    width: 16,
+                    height: 16,
                     child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: light ? AirColors.bubbleMe : playFg))
+                      strokeWidth: 2,
+                      color: light ? AirColors.bubbleMe : playFg,
+                    ),
+                  )
                 : IconButton(
                     icon: Icon(
                       playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
@@ -161,15 +171,21 @@ class _VoiceNotePlayerState extends State<VoiceNotePlayer> {
                 SliderTheme(
                   data: SliderThemeData(
                     trackHeight: 3,
-                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                    overlayShape: const RoundSliderOverlayShape(overlayRadius: 10),
-                    activeTrackColor:
-                        light ? AirColors.bubbleMeText : AirColors.textPrimary,
+                    thumbShape: const RoundSliderThumbShape(
+                      enabledThumbRadius: 6,
+                    ),
+                    overlayShape: const RoundSliderOverlayShape(
+                      overlayRadius: 10,
+                    ),
+                    activeTrackColor: light
+                        ? AirColors.bubbleMeText
+                        : AirColors.textPrimary,
                     inactiveTrackColor: light
                         ? Colors.black.withOpacity(0.2)
                         : AirColors.textFaint.withOpacity(0.5),
-                    thumbColor:
-                        light ? AirColors.bubbleMeText : AirColors.textPrimary,
+                    thumbColor: light
+                        ? AirColors.bubbleMeText
+                        : AirColors.textPrimary,
                   ),
                   child: Slider(
                     value: _progress,
@@ -186,11 +202,12 @@ class _VoiceNotePlayerState extends State<VoiceNotePlayer> {
                     _failed
                         ? 'Unavailable'
                         : (playing || _position > Duration.zero
-                            ? _fmt(_position)
-                            : widget.duration),
+                              ? _fmt(_position)
+                              : widget.duration),
                     style: TextStyle(
-                        fontSize: 11,
-                        color: light ? Colors.black54 : AirColors.textSecondary),
+                      fontSize: 11,
+                      color: light ? Colors.black54 : AirColors.textSecondary,
+                    ),
                   ),
                 ),
               ],

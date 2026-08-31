@@ -45,16 +45,18 @@ class QuickReplySender {
       final chatId = _chatId(myUid, recipientUid);
       final now = DateTime.now().millisecondsSinceEpoch;
 
-      await MessageDao().insertMessage(ChatMessage(
-        id: packetId,
-        chatId: chatId,
-        senderUid: myUid,
-        recipientUid: recipientUid,
-        text: text,
-        timestamp: now,
-        isMe: true,
-        status: 'sending',
-      ));
+      await MessageDao().insertMessage(
+        ChatMessage(
+          id: packetId,
+          chatId: chatId,
+          senderUid: myUid,
+          recipientUid: recipientUid,
+          text: text,
+          timestamp: now,
+          isMe: true,
+          status: 'sending',
+        ),
+      );
 
       final ws = WebSocketTunnelClient(uid: myUid);
       ws.sendPacket(
@@ -72,7 +74,11 @@ class QuickReplySender {
       await MessageDao().updateMessageStatus(packetId, 'delivered');
       return true;
     } catch (e, st) {
-      CrashReporter.recordError(error: e, stackTrace: st, source: 'quick-reply');
+      CrashReporter.recordError(
+        error: e,
+        stackTrace: st,
+        source: 'quick-reply',
+      );
       return false;
     }
   }

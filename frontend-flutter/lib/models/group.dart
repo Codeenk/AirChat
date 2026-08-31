@@ -14,18 +14,18 @@ class Group {
   });
 
   Map<String, dynamic> toMap() => {
-        'id': id,
-        'name': name,
-        'member_uids': jsonEncode(memberUids),
-        'created_at': createdAt,
-      };
+    'id': id,
+    'name': name,
+    'member_uids': jsonEncode(memberUids),
+    'created_at': createdAt,
+  };
 
   factory Group.fromMap(Map<String, dynamic> map) => Group(
-        id: map['id'] as String,
-        name: map['name'] as String,
-        memberUids: _decodeUids(map['member_uids']),
-        createdAt: map['created_at'] as int? ?? 0,
-      );
+    id: map['id'] as String,
+    name: map['name'] as String,
+    memberUids: _decodeUids(map['member_uids']),
+    createdAt: map['created_at'] as int? ?? 0,
+  );
 
   static List<String> _decodeUids(dynamic v) {
     if (v == null) return [];
@@ -41,9 +41,9 @@ class Group {
   }
 
   Group copyWith({String? name, List<String>? memberUids}) => Group(
-        id: id,
-        name: name ?? this.name,
-        memberUids: memberUids ?? this.memberUids,
-        createdAt: createdAt,
-      );
+    id: id,
+    name: name ?? this.name,
+    memberUids: memberUids ?? this.memberUids,
+    createdAt: createdAt,
+  );
 }

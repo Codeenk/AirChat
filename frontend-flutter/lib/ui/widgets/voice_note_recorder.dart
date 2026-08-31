@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:record/record.dart';
+
 import '../../core/theme/colors.dart';
 
 enum VoiceRecorderState { idle, recording }
@@ -107,8 +108,11 @@ class _VoiceNoteRecorderState extends State<VoiceNoteRecorder> {
           const SizedBox(width: 4),
           GestureDetector(
             onTap: () => _stop(send: false),
-            child: const Icon(Icons.delete_outline,
-                color: AirColors.textSecondary, size: 20),
+            child: const Icon(
+              Icons.delete_outline,
+              color: AirColors.textSecondary,
+              size: 20,
+            ),
           ),
         ],
       );
@@ -117,8 +121,11 @@ class _VoiceNoteRecorderState extends State<VoiceNoteRecorder> {
       onLongPressStart: (_) => _start(),
       onLongPressEnd: (_) => _stop(send: true),
       onLongPressCancel: () => _stop(send: false),
-      child: const Icon(Icons.mic_none_rounded,
-          color: AirColors.textSecondary, size: 24),
+      child: const Icon(
+        Icons.mic_none_rounded,
+        color: AirColors.textSecondary,
+        size: 24,
+      ),
     );
   }
 }

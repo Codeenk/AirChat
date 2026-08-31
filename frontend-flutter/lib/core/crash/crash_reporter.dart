@@ -36,21 +36,26 @@ class CrashReporter {
     StackTrace? stackTrace,
     String? source,
   }) {
-    _appendLine(jsonEncode({
-      'ts': DateTime.now().toUtc().toIso8601String(),
-      'version': _appVersion,
-      if (source != null) 'source': source,
-      'error': error.toString(),
-      if (stackTrace != null) 'stack': stackTrace.toString().split('\n').take(24).join('\n'),
-    }));
+    _appendLine(
+      jsonEncode({
+        'ts': DateTime.now().toUtc().toIso8601String(),
+        'version': _appVersion,
+        if (source != null) 'source': source,
+        'error': error.toString(),
+        if (stackTrace != null)
+          'stack': stackTrace.toString().split('\n').take(24).join('\n'),
+      }),
+    );
   }
 
   static void recordLog(String message) {
-    _appendLine(jsonEncode({
-      'ts': DateTime.now().toUtc().toIso8601String(),
-      'version': _appVersion,
-      'log': message,
-    }));
+    _appendLine(
+      jsonEncode({
+        'ts': DateTime.now().toUtc().toIso8601String(),
+        'version': _appVersion,
+        'log': message,
+      }),
+    );
   }
 
   /// Full diagnostics content for the future "Export diagnostics" button.

@@ -9,7 +9,8 @@ class NotificationService {
   static final NotificationService instance = NotificationService._();
   NotificationService._();
 
-  final FlutterLocalNotificationsPlugin _plugin = FlutterLocalNotificationsPlugin();
+  final FlutterLocalNotificationsPlugin _plugin =
+      FlutterLocalNotificationsPlugin();
   bool _initialized = false;
 
   /// No local notifications on web (no plugin implementation) — calls become
@@ -43,19 +44,27 @@ class NotificationService {
 
     // Create the channel explicitly — required for reliable delivery and
     // user-controlled importance on Android 8+.
-    final androidPlugin = _plugin.resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>();
-    await androidPlugin?.createNotificationChannel(const AndroidNotificationChannel(
-      'airchat_messages',
-      'Messages',
-      description: 'New end-to-end encrypted messages',
-      importance: Importance.high,
-    ));
+    final androidPlugin = _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    await androidPlugin?.createNotificationChannel(
+      const AndroidNotificationChannel(
+        'airchat_messages',
+        'Messages',
+        description: 'New end-to-end encrypted messages',
+        importance: Importance.high,
+      ),
+    );
 
     await _plugin.initialize(
-      settings: const InitializationSettings(android: androidInit, iOS: iosInit),
+      settings: const InitializationSettings(
+        android: androidInit,
+        iOS: iosInit,
+      ),
       onDidReceiveNotificationResponse: _onNotificationResponse,
-      onDidReceiveBackgroundNotificationResponse: _onBackgroundNotificationResponse,
+      onDidReceiveBackgroundNotificationResponse:
+          _onBackgroundNotificationResponse,
     );
     _initialized = true;
   }
@@ -88,8 +97,10 @@ class NotificationService {
       _pendingQuickReplies.remove(senderUid);
 
   Future<bool> requestPermissions() async {
-    final android = _plugin.resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>();
+    final android = _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
     if (android != null) {
       final granted = await android.requestNotificationsPermission();
       return granted ?? false;
@@ -106,14 +117,25 @@ class NotificationService {
     if (!_supported) return;
     if (!_initialized) await initialize();
 
-    final person = Person(name: title, key: senderUid ?? title, important: true);
-    final history = (senderUid != null ? _shownLines[senderUid] : null) ?? const [];
+    final person = Person(
+      name: title,
+      key: senderUid ?? title,
+      important: true,
+    );
+    final history =
+        (senderUid != null ? _shownLines[senderUid] : null) ?? const [];
     final styleInformation = MessagingStyleInformation(
       person,
       groupConversation: false,
       conversationTitle: title,
       messages: [
-        ...history.map((l) => Message(l.text, DateTime.fromMillisecondsSinceEpoch(l.timestamp), person)),
+        ...history.map(
+          (l) => Message(
+            l.text,
+            DateTime.fromMillisecondsSinceEpoch(l.timestamp),
+            person,
+          ),
+        ),
         Message(body, DateTime.now(), person),
       ],
     );
@@ -159,7 +181,12 @@ class NotificationService {
         await _plugin.cancel(id: 0, tag: senderUid);
       } catch (_) {}
       final list = _shownLines.putIfAbsent(senderUid, () => []);
-      list.add(MessageLine(text: body, timestamp: DateTime.now().millisecondsSinceEpoch));
+      list.add(
+        MessageLine(
+          text: body,
+          timestamp: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
       if (list.length > 8) list.removeRange(0, list.length - 8);
     }
   }

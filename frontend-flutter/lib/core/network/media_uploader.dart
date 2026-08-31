@@ -1,5 +1,6 @@
 import 'dart:collection';
 import 'dart:typed_data';
+
 import 'package:cryptography/cryptography.dart';
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
@@ -81,11 +82,13 @@ class MediaPipeline {
 
     for (int attempt = 1; attempt <= _maxRetries; attempt++) {
       try {
-        final response = await http.put(
-          uri,
-          headers: {'Content-Type': 'application/octet-stream'},
-          body: encryptedPayload,
-        ).timeout(const Duration(seconds: 30));
+        final response = await http
+            .put(
+              uri,
+              headers: {'Content-Type': 'application/octet-stream'},
+              body: encryptedPayload,
+            )
+            .timeout(const Duration(seconds: 30));
 
         if (response.statusCode == 200) {
           final keyBytes = await secretKey.extractBytes();
@@ -96,7 +99,9 @@ class MediaPipeline {
           );
         }
         if (attempt == _maxRetries) {
-          throw Exception("Failed to upload encrypted blob (${response.statusCode}) after $_maxRetries attempts");
+          throw Exception(
+            "Failed to upload encrypted blob (${response.statusCode}) after $_maxRetries attempts",
+          );
         }
       } catch (e) {
         if (attempt == _maxRetries) rethrow;
@@ -145,7 +150,10 @@ class MediaPipeline {
       macLength: 16,
     );
 
-    final decryptedBytes = await cipher.decrypt(secretBox, secretKey: secretKey);
+    final decryptedBytes = await cipher.decrypt(
+      secretBox,
+      secretKey: secretKey,
+    );
     final result = Uint8List.fromList(decryptedBytes);
 
     // Cache for future renders.

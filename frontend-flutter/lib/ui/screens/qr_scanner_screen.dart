@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
+
 import '../../core/crypto/key_store.dart';
 import '../../core/crypto/qr_payload.dart';
 import '../../core/database/daos/chat_dao.dart';
@@ -79,7 +80,7 @@ class _QrScannerScreenState extends State<QrScannerScreen>
     if (_starting) return;
     final granted =
         await Permission.camera.status.isGranted ||
-            await Permission.camera.status.isLimited;
+        await Permission.camera.status.isLimited;
     if (!mounted || !granted) return;
     if (!_hasCameraPermission) setState(() => _hasCameraPermission = true);
     await _startScanner();
@@ -122,7 +123,9 @@ class _QrScannerScreenState extends State<QrScannerScreen>
         debugPrint('[AirChat] scanner start failed: $e');
       }
       if (_screenDisposed) {
-        try { await controller.dispose(); } catch (_) {}
+        try {
+          await controller.dispose();
+        } catch (_) {}
         return;
       }
       if (mounted) setState(() {});
@@ -170,19 +173,23 @@ class _QrScannerScreenState extends State<QrScannerScreen>
     final myUid = await KeyStore.getUid() ?? '';
     final chatId = buildChatId(myUid, payload.uid);
 
-    await ContactDao().insertContact(Contact(
-      uid: payload.uid,
-      username: payload.username,
-      identityPublicKey: payload.identityPublicKey,
-      createdAt: DateTime.now().millisecondsSinceEpoch,
-    ));
+    await ContactDao().insertContact(
+      Contact(
+        uid: payload.uid,
+        username: payload.username,
+        identityPublicKey: payload.identityPublicKey,
+        createdAt: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
 
-    await ChatDao().insertOrUpdateChat(ChatThread(
-      id: chatId,
-      contactUid: payload.uid,
-      lastMessage: '',
-      lastMessageTime: DateTime.now().millisecondsSinceEpoch,
-    ));
+    await ChatDao().insertOrUpdateChat(
+      ChatThread(
+        id: chatId,
+        contactUid: payload.uid,
+        lastMessage: '',
+        lastMessageTime: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
 
     if (!mounted) return;
     Navigator.pushReplacement(
@@ -222,22 +229,29 @@ class _QrScannerScreenState extends State<QrScannerScreen>
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.videocam_off_outlined,
-                size: 44, color: AirColors.textFaint),
+            const Icon(
+              Icons.videocam_off_outlined,
+              size: 44,
+              color: AirColors.textFaint,
+            ),
             const SizedBox(height: 16),
             const Text(
               "Camera access needed",
               style: TextStyle(
-                  color: AirColors.textPrimary,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600),
+                color: AirColors.textPrimary,
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const SizedBox(height: 8),
             const Text(
               "Allow camera access to scan a peer's\nQR code.",
               textAlign: TextAlign.center,
               style: TextStyle(
-                  color: AirColors.textSecondary, fontSize: 13, height: 1.4),
+                color: AirColors.textSecondary,
+                fontSize: 13,
+                height: 1.4,
+              ),
             ),
             const SizedBox(height: 24),
             FilledButton.icon(
@@ -288,7 +302,9 @@ class _QrScannerScreenState extends State<QrScannerScreen>
         else
           const Center(
             child: CircularProgressIndicator(
-                strokeWidth: 2, color: AirColors.accent),
+              strokeWidth: 2,
+              color: AirColors.accent,
+            ),
           ),
         // Dimmed mask around the scan window
         ColorFiltered(
@@ -298,11 +314,7 @@ class _QrScannerScreenState extends State<QrScannerScreen>
           ),
           child: Stack(
             children: [
-              Container(
-                decoration: const BoxDecoration(
-                  color: Colors.black,
-                ),
-              ),
+              Container(decoration: const BoxDecoration(color: Colors.black)),
               Center(
                 child: Container(
                   width: 260,
@@ -336,7 +348,9 @@ class _QrScannerScreenState extends State<QrScannerScreen>
             child: Text(
               "Align peer QR code inside the frame",
               style: TextStyle(
-                  color: AirColors.textPrimary.withOpacity(0.9), fontSize: 14),
+                color: AirColors.textPrimary.withOpacity(0.9),
+                fontSize: 14,
+              ),
             ),
           ),
         ),
@@ -351,7 +365,8 @@ class _QrScannerScreenState extends State<QrScannerScreen>
               side: const BorderSide(color: AirColors.border),
               padding: const EdgeInsets.symmetric(vertical: 14),
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14)),
+                borderRadius: BorderRadius.circular(14),
+              ),
             ),
             icon: const Icon(Icons.content_paste, size: 18),
             label: const Text("Paste identity instead"),
@@ -371,8 +386,11 @@ class _QrScannerScreenState extends State<QrScannerScreen>
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.error_outline,
-                size: 44, color: AirColors.textFaint),
+            const Icon(
+              Icons.error_outline,
+              size: 44,
+              color: AirColors.textFaint,
+            ),
             const SizedBox(height: 16),
             Text(
               permanentlyDenied
@@ -380,19 +398,22 @@ class _QrScannerScreenState extends State<QrScannerScreen>
                   : "Scanner failed to start",
               textAlign: TextAlign.center,
               style: const TextStyle(
-                  color: AirColors.textPrimary,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600),
+                color: AirColors.textPrimary,
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const SizedBox(height: 8),
             Text(
               permanentlyDenied
                   ? "Enable it in app settings, then come back."
                   : error.errorDetails?.toString() ??
-                      "Pull back and try again.",
+                        "Pull back and try again.",
               textAlign: TextAlign.center,
               style: const TextStyle(
-                  color: AirColors.textSecondary, fontSize: 13),
+                color: AirColors.textSecondary,
+                fontSize: 13,
+              ),
             ),
             const SizedBox(height: 24),
             FilledButton(

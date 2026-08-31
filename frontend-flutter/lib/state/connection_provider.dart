@@ -1,6 +1,8 @@
 import 'dart:convert';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../core/crypto/key_store.dart';
 import '../core/crypto/sodium_engine.dart';
 import '../core/database/daos/chat_dao.dart';
@@ -46,13 +48,19 @@ final chatDaoProvider = Provider((_) => ChatDao());
 final messageDaoProvider = Provider((_) => MessageDao());
 final sodiumEngineProvider = Provider((_) => SodiumEngine());
 
-final websocketClientProvider = Provider.family<WebSocketTunnelClient, String>((ref, uid) {
+final websocketClientProvider = Provider.family<WebSocketTunnelClient, String>((
+  ref,
+  uid,
+) {
   final client = WebSocketTunnelClient(uid: uid);
   ref.onDispose(() => client.dispose());
   return client;
 });
 
-final tunnelStateProvider = StreamProvider.family<TunnelState, String>((ref, uid) async* {
+final tunnelStateProvider = StreamProvider.family<TunnelState, String>((
+  ref,
+  uid,
+) async* {
   final client = ref.watch(websocketClientProvider(uid));
   // Replay current state first — late subscribers (opened screens) see truth
   // immediately instead of a stale 'Connecting' until the next event.
@@ -106,21 +114,17 @@ class MessageRouter {
         final status = msg['status'] as String?;
         if (packetId != null && status != null) {
           messageDao.updateMessageStatus(packetId, status);
-          bus.fire(RefreshEvent(
-            type: 'status',
-            messageId: packetId,
-            status: status,
-          ));
+          bus.fire(
+            RefreshEvent(type: 'status', messageId: packetId, status: status),
+          );
         }
       } else if (type == 'read_receipt') {
         final packetId = msg['packetId'] as String?;
         if (packetId != null) {
           messageDao.updateMessageStatus(packetId, 'read');
-          bus.fire(RefreshEvent(
-            type: 'status',
-            messageId: packetId,
-            status: 'read',
-          ));
+          bus.fire(
+            RefreshEvent(type: 'status', messageId: packetId, status: 'read'),
+          );
         }
       } else if (type == 'delivery_failed') {
         // 24h ephemeral cache expired — the message was destroyed server-side
@@ -129,22 +133,22 @@ class MessageRouter {
         for (final id in packetIds) {
           if (id is String && id.isNotEmpty) {
             messageDao.updateMessageStatus(id, 'expired');
-            bus.fire(RefreshEvent(
-              type: 'status',
-              messageId: id,
-              status: 'expired',
-            ));
+            bus.fire(
+              RefreshEvent(type: 'status', messageId: id, status: 'expired'),
+            );
           }
         }
       } else if (type == 'delivery_receipt') {
         final packetId = msg['packetId'] as String?;
         if (packetId != null) {
           messageDao.updateMessageStatus(packetId, 'delivered');
-          bus.fire(RefreshEvent(
-            type: 'status',
-            messageId: packetId,
-            status: 'delivered',
-          ));
+          bus.fire(
+            RefreshEvent(
+              type: 'status',
+              messageId: packetId,
+              status: 'delivered',
+            ),
+          );
         }
       }
     } catch (_) {
@@ -156,7 +160,8 @@ class MessageRouter {
     final senderUid = msg['senderUid'] as String?;
     final packetId = msg['packetId'] as String?;
     final encodedPayload = msg['payload'] as String?;
-    final timestamp = msg['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch;
+    final timestamp =
+        msg['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch;
 
     if (senderUid == null || packetId == null || encodedPayload == null) return;
 
@@ -176,8 +181,7 @@ class MessageRouter {
       final mediaKey = decoded['mediaKey'];
       final secretKeyHex = decoded['secretKeyHex'];
       final nonceHex = decoded['nonceHex'];
-      final replyTo =
-          (decoded['replyTo'] as Map<String, dynamic>?) ?? const {};
+      final replyTo = (decoded['replyTo'] as Map<String, dynamic>?) ?? const {};
       final groupId = decoded['groupId'] as String?;
       final groupName = decoded['groupName'] as String?;
 
@@ -194,20 +198,22 @@ class MessageRouter {
               (decoded['kickedUid'] as String? ?? '') == uid) {
             await GroupDao().deleteGroup(gid);
           } else {
-            await GroupDao().insertGroup(Group(
-              id: gid,
-              name: gname,
-              memberUids: memberUids.isEmpty ? [uid, senderUid] : memberUids,
-              createdAt: timestamp,
-            ));
+            await GroupDao().insertGroup(
+              Group(
+                id: gid,
+                name: gname,
+                memberUids: memberUids.isEmpty ? [uid, senderUid] : memberUids,
+                createdAt: timestamp,
+              ),
+            );
           }
           bus.fire(RefreshEvent(type: 'messages', chatId: gid));
         }
         return;
       }
 
-      final isGroup = groupId != null && groupId!.isNotEmpty;
-      final chatId = isGroup ? groupId! : _chatId(uid, senderUid);
+      final isGroup = groupId != null && groupId.isNotEmpty;
+      final chatId = isGroup ? groupId : _chatId(uid, senderUid);
 
       // Resolve contact name inline (fast, no network) — use fallback if unknown.
       final existing = await contactDao.getContactByUid(senderUid);
@@ -255,12 +261,14 @@ class MessageRouter {
         }
       } else {
         final chatOpen = MessageRouter.openChatId == chatId;
-        await chatDao.updatePreviewPreservingUnread(ChatThread(
-          id: chatId,
-          contactUid: senderUid,
-          lastMessage: text.isEmpty ? '📎 $messageType' : text,
-          lastMessageTime: timestamp,
-        ));
+        await chatDao.updatePreviewPreservingUnread(
+          ChatThread(
+            id: chatId,
+            contactUid: senderUid,
+            lastMessage: text.isEmpty ? '📎 $messageType' : text,
+            lastMessageTime: timestamp,
+          ),
+        );
 
         if (!chatOpen) {
           await chatDao.incrementUnread(chatId);
@@ -268,7 +276,8 @@ class MessageRouter {
 
         bus.fire(RefreshEvent(type: 'messages', chatId: chatId));
 
-        if (NotificationService.isAppForeground && MessageRouter.openChatId == chatId) {
+        if (NotificationService.isAppForeground &&
+            MessageRouter.openChatId == chatId) {
           client.sendReadReceipt(packetId: packetId, senderUid: senderUid);
         }
 
@@ -296,14 +305,17 @@ class MessageRouter {
       final existing = await contactDao.getContactByUid(senderUid);
       if (existing == null) {
         final info = await const ApiClient().lookupIdentity(uid: senderUid);
-        final username = (info?['username'] as String?) ?? _fallbackName(senderUid);
+        final username =
+            (info?['username'] as String?) ?? _fallbackName(senderUid);
         final publicKey = (info?['identity_public_key'] as String?) ?? '';
-        await contactDao.insertContact(Contact(
-          uid: senderUid,
-          username: username,
-          identityPublicKey: publicKey,
-          createdAt: DateTime.now().millisecondsSinceEpoch,
-        ));
+        await contactDao.insertContact(
+          Contact(
+            uid: senderUid,
+            username: username,
+            identityPublicKey: publicKey,
+            createdAt: DateTime.now().millisecondsSinceEpoch,
+          ),
+        );
         bus.fire(RefreshEvent(type: 'messages'));
       } else if (_isFallbackName(existing.username)) {
         final info = await const ApiClient().lookupIdentity(uid: senderUid);
@@ -311,12 +323,14 @@ class MessageRouter {
         if (realName != null &&
             realName.isNotEmpty &&
             realName != existing.username) {
-          await contactDao.insertContact(Contact(
-            uid: existing.uid,
-            username: realName,
-            identityPublicKey: existing.identityPublicKey,
-            createdAt: existing.createdAt,
-          ));
+          await contactDao.insertContact(
+            Contact(
+              uid: existing.uid,
+              username: realName,
+              identityPublicKey: existing.identityPublicKey,
+              createdAt: existing.createdAt,
+            ),
+          );
           bus.fire(RefreshEvent(type: 'messages'));
         }
       }
@@ -339,7 +353,10 @@ class MessageRouter {
   }
 }
 
-final messageRouterProvider = Provider.family<MessageRouter, String>((ref, uid) {
+final messageRouterProvider = Provider.family<MessageRouter, String>((
+  ref,
+  uid,
+) {
   final client = ref.watch(websocketClientProvider(uid));
   final engine = ref.watch(sodiumEngineProvider);
   final router = MessageRouter(

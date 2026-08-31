@@ -6,12 +6,7 @@ class RefreshEvent {
   final String? messageId;
   final String? status;
 
-  RefreshEvent({
-    required this.type,
-    this.chatId,
-    this.messageId,
-    this.status,
-  });
+  RefreshEvent({required this.type, this.chatId, this.messageId, this.status});
 }
 
 /// Lightweight in-process broadcast bus.

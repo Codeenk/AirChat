@@ -1,4 +1,5 @@
 import 'package:sqflite_sqlcipher/sqflite.dart';
+
 import '../app_database.dart';
 import '../../../models/message_payload.dart';
 
@@ -65,7 +66,12 @@ class MessageDao {
 
   Future<ChatMessage?> getMessageById(String id) async {
     final db = await AppDatabase.instance;
-    final maps = await db.query('messages', where: 'id = ?', whereArgs: [id], limit: 1);
+    final maps = await db.query(
+      'messages',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
     if (maps.isEmpty) return null;
     return ChatMessage.fromMap(maps.first);
   }

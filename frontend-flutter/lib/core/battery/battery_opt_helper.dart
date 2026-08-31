@@ -1,9 +1,11 @@
 import 'dart:io' show Platform;
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:permission_handler/permission_handler.dart' as ph;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
 import '../theme/colors.dart';
 
 class BatteryOptHelper {
@@ -20,7 +22,9 @@ class BatteryOptHelper {
     if (kIsWeb || !Platform.isAndroid) return true;
     try {
       // Try native channel first (direct PowerManager check, most reliable)
-      final result = await _channel.invokeMethod<bool>('isIgnoringBatteryOptimizations');
+      final result = await _channel.invokeMethod<bool>(
+        'isIgnoringBatteryOptimizations',
+      );
       if (result != null) return result;
     } catch (_) {}
     try {
@@ -37,7 +41,9 @@ class BatteryOptHelper {
   static Future<bool> requestExemption() async {
     if (kIsWeb || !Platform.isAndroid) return true;
     try {
-      final granted = await _channel.invokeMethod<bool>('requestIgnoreBatteryOptimizations');
+      final granted = await _channel.invokeMethod<bool>(
+        'requestIgnoreBatteryOptimizations',
+      );
       if (granted == true) return true;
       // If native handled it, re-check
       return await isExempt();
@@ -82,20 +88,36 @@ class BatteryOptHelper {
         barrierDismissible: false,
         builder: (ctx) => AlertDialog(
           backgroundColor: AirColors.surface,
-          title: const Text('Stay reachable',
-              style: TextStyle(color: AirColors.textPrimary, fontSize: 16, fontWeight: FontWeight.w700)),
+          title: const Text(
+            'Stay reachable',
+            style: TextStyle(
+              color: AirColors.textPrimary,
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
           content: const Text(
             'AirChat needs to stay reachable in the background to deliver messages instantly — even when your phone is in battery saver or Doze mode.\n\n'
             'Allow battery unrestricted? You can change this anytime in Settings.',
-            style: TextStyle(color: AirColors.textSecondary, fontSize: 13, height: 1.4),
+            style: TextStyle(
+              color: AirColors.textSecondary,
+              fontSize: 13,
+              height: 1.4,
+            ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Not now', style: TextStyle(color: AirColors.textSecondary)),
+              child: const Text(
+                'Not now',
+                style: TextStyle(color: AirColors.textSecondary),
+              ),
             ),
             FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: AirColors.accent, foregroundColor: AirColors.background),
+              style: FilledButton.styleFrom(
+                backgroundColor: AirColors.accent,
+                foregroundColor: AirColors.background,
+              ),
               onPressed: () => Navigator.pop(ctx, true),
               child: const Text('Allow'),
             ),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+
 import '../../core/theme/colors.dart';
 import 'encrypted_media_views.dart';
 import 'voice_note_player.dart';
@@ -106,7 +107,8 @@ class _ChatBubbleState extends State<ChatBubble> {
   void _onDragEnd(DragEndDetails details) {
     if (widget.onSwipeReply == null) return;
     final fastFlick = (details.primaryVelocity ?? 0) > 450;
-    final shouldReply = _dragDx >= _swipeThreshold || (fastFlick && _dragDx > 12);
+    final shouldReply =
+        _dragDx >= _swipeThreshold || (fastFlick && _dragDx > 12);
     if (shouldReply) widget.onSwipeReply!();
     setState(() => _dragDx = 0);
     _firedHaptic = false;
@@ -119,7 +121,11 @@ class _ChatBubbleState extends State<ChatBubble> {
     switch (widget.status) {
       case 'failed':
       case 'expired':
-        return const Icon(Icons.error_outline, size: 14, color: Color(0xFFB3261E));
+        return const Icon(
+          Icons.error_outline,
+          size: 14,
+          color: Color(0xFFB3261E),
+        );
       case 'sending':
         return Icon(Icons.access_time, size: 13, color: onLight);
       case 'sent':
@@ -128,7 +134,11 @@ class _ChatBubbleState extends State<ChatBubble> {
         return Icon(Icons.done_all, size: 14, color: onLight);
       case 'read':
       default:
-        return const Icon(Icons.done_all, size: 14, color: AirColors.bubbleMeText);
+        return const Icon(
+          Icons.done_all,
+          size: 14,
+          color: AirColors.bubbleMeText,
+        );
     }
   }
 
@@ -163,8 +173,7 @@ class _ChatBubbleState extends State<ChatBubble> {
 
       case 'voice':
         return VoiceNotePlayer(
-          duration:
-              widget.text.isEmpty ? '0:00' : widget.text,
+          duration: widget.text.isEmpty ? '0:00' : widget.text,
           mediaKey: widget.mediaKey,
           secretKeyHex: widget.secretKeyHex,
           nonceHex: widget.nonceHex,
@@ -174,12 +183,15 @@ class _ChatBubbleState extends State<ChatBubble> {
 
       case 'text':
       default:
-        final isLong = widget.text.length > 400 || '\n'.allMatches(widget.text).length > 7;
+        final isLong =
+            widget.text.length > 400 || '\n'.allMatches(widget.text).length > 7;
         if (!isLong) {
           return Text(
             widget.text,
             style: TextStyle(
-              color: widget.isMe ? AirColors.bubbleMeText : AirColors.textPrimary,
+              color: widget.isMe
+                  ? AirColors.bubbleMeText
+                  : AirColors.textPrimary,
               fontSize: 15,
               height: 1.35,
               letterSpacing: -0.1,
@@ -192,9 +204,13 @@ class _ChatBubbleState extends State<ChatBubble> {
             Text(
               widget.text,
               maxLines: _expanded ? null : 6,
-              overflow: _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
+              overflow: _expanded
+                  ? TextOverflow.visible
+                  : TextOverflow.ellipsis,
               style: TextStyle(
-                color: widget.isMe ? AirColors.bubbleMeText : AirColors.textPrimary,
+                color: widget.isMe
+                    ? AirColors.bubbleMeText
+                    : AirColors.textPrimary,
                 fontSize: 15,
                 height: 1.35,
                 letterSpacing: -0.1,
@@ -218,25 +234,30 @@ class _ChatBubbleState extends State<ChatBubble> {
   }
 
   Widget _mediaPlaceholder(IconData icon) => Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: AirColors.surfaceLight,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(icon, size: 24, color: AirColors.textSecondary),
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: AirColors.surfaceLight,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Icon(icon, size: 24, color: AirColors.textSecondary),
+      ),
+      const SizedBox(width: 8),
+      Flexible(
+        child: Text(
+          widget.text,
+          style: const TextStyle(
+            color: AirColors.textPrimary,
+            fontSize: 15,
+            height: 1.25,
           ),
-          const SizedBox(width: 8),
-          Flexible(
-            child: Text(widget.text,
-                style: const TextStyle(
-                    color: AirColors.textPrimary, fontSize: 15, height: 1.25)),
-          ),
-        ],
-      );
+        ),
+      ),
+    ],
+  );
 
   /// Quoted original message pinned above the bubble content.
   Widget _buildQuoteBlock(Color metaColor) {
@@ -259,9 +280,7 @@ class _ChatBubbleState extends State<ChatBubble> {
                 width: 3,
                 height: 30,
                 decoration: BoxDecoration(
-                  color: widget.isMe
-                      ? Colors.black45
-                      : AirColors.accent,
+                  color: widget.isMe ? Colors.black45 : AirColors.accent,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -316,20 +335,41 @@ class _ChatBubbleState extends State<ChatBubble> {
           children: [
             const SizedBox(height: 10),
             Container(
-                width: 36, height: 4, decoration: BoxDecoration(color: AirColors.border, borderRadius: BorderRadius.circular(2))),
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AirColors.border,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
             ListTile(
-              leading: const Icon(Icons.copy_rounded, color: AirColors.textPrimary, size: 20),
-              title: const Text('Copy', style: TextStyle(color: AirColors.textPrimary)),
+              leading: const Icon(
+                Icons.copy_rounded,
+                color: AirColors.textPrimary,
+                size: 20,
+              ),
+              title: const Text(
+                'Copy',
+                style: TextStyle(color: AirColors.textPrimary),
+              ),
               onTap: () {
                 Clipboard.setData(ClipboardData(text: widget.text));
                 Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied')));
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(const SnackBar(content: Text('Copied')));
               },
             ),
             if (widget.onSwipeReply != null)
               ListTile(
-                leading: const Icon(Icons.reply, color: AirColors.textPrimary, size: 20),
-                title: const Text('Reply', style: TextStyle(color: AirColors.textPrimary)),
+                leading: const Icon(
+                  Icons.reply,
+                  color: AirColors.textPrimary,
+                  size: 20,
+                ),
+                title: const Text(
+                  'Reply',
+                  style: TextStyle(color: AirColors.textPrimary),
+                ),
                 onTap: () {
                   Navigator.pop(context);
                   widget.onSwipeReply!.call();
@@ -337,16 +377,33 @@ class _ChatBubbleState extends State<ChatBubble> {
               ),
             if (widget.onDeleteForMe != null)
               ListTile(
-                leading: const Icon(Icons.delete_outline, color: AirColors.error, size: 20),
-                title: const Text('Delete for me', style: TextStyle(color: AirColors.error)),
+                leading: const Icon(
+                  Icons.delete_outline,
+                  color: AirColors.error,
+                  size: 20,
+                ),
+                title: const Text(
+                  'Delete for me',
+                  style: TextStyle(color: AirColors.error),
+                ),
                 onTap: () {
                   Navigator.pop(context);
                   widget.onDeleteForMe!.call();
                 },
               ),
             ListTile(
-              leading: const Icon(Icons.schedule, color: AirColors.textSecondary, size: 20),
-              title: Text(time, style: const TextStyle(color: AirColors.textSecondary, fontSize: 13)),
+              leading: const Icon(
+                Icons.schedule,
+                color: AirColors.textSecondary,
+                size: 20,
+              ),
+              title: Text(
+                time,
+                style: const TextStyle(
+                  color: AirColors.textSecondary,
+                  fontSize: 13,
+                ),
+              ),
             ),
             const SizedBox(height: 8),
           ],
@@ -357,9 +414,8 @@ class _ChatBubbleState extends State<ChatBubble> {
 
   @override
   Widget build(BuildContext context) {
-    final formattedTime = DateFormat('h:mm a').format(
-      DateTime.fromMillisecondsSinceEpoch(widget.timestamp),
-    );
+    final formattedTime = DateFormat('h:mm a')
+        .format(DateTime.fromMillisecondsSinceEpoch(widget.timestamp));
 
     final isFailed = _isUndelivered;
 
@@ -367,15 +423,15 @@ class _ChatBubbleState extends State<ChatBubble> {
     final bubbleColor = isFailed
         ? const Color(0xFF2A1515)
         : (widget.isMe ? AirColors.bubbleMe : AirColors.bubblePeer);
-    final metaColor =
-        widget.isMe ? Colors.black54 : AirColors.textSecondary;
+    final metaColor = widget.isMe ? Colors.black54 : AirColors.textSecondary;
 
     // Use plain Container — no AnimatedContainer overhead for non-highlighted
     // bubbles (the vast majority). Highlight border change is instant, which
     // is fine for a 1.4s flash effect.
     final bubble = Container(
       margin: EdgeInsets.only(
-        top: 3, bottom: 3,
+        top: 3,
+        bottom: 3,
         left: widget.isMe ? 48 : 12,
         right: widget.isMe ? 12 : 48,
       ),
@@ -388,12 +444,18 @@ class _ChatBubbleState extends State<ChatBubble> {
         border: Border.all(
           color: widget.highlighted
               ? AirColors.accent
-              : (isFailed ? AirColors.error : (widget.isMe ? Colors.transparent : AirColors.border)),
+              : (isFailed
+                    ? AirColors.error
+                    : (widget.isMe ? Colors.transparent : AirColors.border)),
           width: widget.highlighted || isFailed ? 1.4 : 1,
         ),
         borderRadius: BorderRadius.circular(widget.isMe ? 18 : 18).copyWith(
-          bottomLeft: widget.isMe ? const Radius.circular(18) : const Radius.circular(4),
-          bottomRight: widget.isMe ? const Radius.circular(4) : const Radius.circular(18),
+          bottomLeft: widget.isMe
+              ? const Radius.circular(18)
+              : const Radius.circular(4),
+          bottomRight: widget.isMe
+              ? const Radius.circular(4)
+              : const Radius.circular(18),
         ),
       ),
       child: Column(
@@ -410,12 +472,21 @@ class _ChatBubbleState extends State<ChatBubble> {
                 style: const TextStyle(color: AirColors.error, fontSize: 11),
               ),
             ),
-          if (widget.groupSenderName != null && widget.groupSenderName!.isNotEmpty && !widget.isMe)
+          if (widget.groupSenderName != null &&
+              widget.groupSenderName!.isNotEmpty &&
+              !widget.isMe)
             Padding(
               padding: const EdgeInsets.only(bottom: 3),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text(widget.groupSenderName!, style: const TextStyle(color: AirColors.accent, fontSize: 11, fontWeight: FontWeight.w700)),
+                child: Text(
+                  widget.groupSenderName!,
+                  style: const TextStyle(
+                    color: AirColors.accent,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ),
             ),
           if (_hasReply) _buildQuoteBlock(metaColor),
@@ -455,8 +526,11 @@ class _ChatBubbleState extends State<ChatBubble> {
               opacity: (_dragDx / _swipeThreshold).clamp(0.0, 1.0),
               child: Transform.scale(
                 scale: 0.7 + 0.3 * (_dragDx / _swipeThreshold).clamp(0.0, 1.0),
-                child: const Icon(Icons.reply,
-                    size: 22, color: AirColors.textFaint),
+                child: const Icon(
+                  Icons.reply,
+                  size: 22,
+                  color: AirColors.textFaint,
+                ),
               ),
             ),
             GestureDetector(
