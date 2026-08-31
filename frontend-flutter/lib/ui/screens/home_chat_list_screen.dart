@@ -10,9 +10,13 @@ import '../../core/battery/battery_opt_helper.dart';
 import '../../core/theme/colors.dart';
 import '../../core/update/update_checker.dart';
 import '../../models/contact.dart';
+import '../../models/group.dart';
 import '../../models/chat_thread.dart';
 import '../../state/chat_provider.dart';
+import '../../state/group_provider.dart';
 import 'chat_room_screen.dart';
+import 'create_group_screen.dart';
+import 'group_chat_screen.dart';
 import 'qr_identity_screen.dart';
 import 'qr_scanner_screen.dart';
 import 'notification_health_screen.dart';
@@ -113,6 +117,7 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
   @override
   Widget build(BuildContext context) {
     final asyncThreads = ref.watch(chatThreadsProvider);
+    final groupsAsync = ref.watch(groupsProvider);
 
     return Scaffold(
       backgroundColor: AirColors.background,
@@ -137,6 +142,16 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => const QrIdentityScreen()),
+              );
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.group_add, color: AirColors.textPrimary),
+            tooltip: "New group",
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const CreateGroupScreen()),
               );
             },
           ),
@@ -165,8 +180,10 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
         error: (err, _) => Center(
           child: Text("Error: $err", style: const TextStyle(color: AirColors.textSecondary)),
         ),
-        data: (threads) => threads.isEmpty
-            ? Center(
+        data: (threads) {
+              final groups = groupsAsync.asData?.value ?? [];
+              if (threads.isEmpty && groups.isEmpty) {
+                return Center(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
@@ -201,15 +218,17 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
                     ),
                   ],
                 ),
-              )
-            : ListView.separated(
-                itemCount: threads.length,
-                separatorBuilder: (_, __) => const Divider(color: AirColors.divider, height: 1, indent: 76),
-                itemBuilder: (context, index) {
-                  final thread = threads[index];
-                  return _buildChatTile(context, thread);
-                },
-              ),
+                );
+              }
+              return ListView(
+                children: [
+                  ...groups.map((g) => _buildGroupTile(context, g)),
+                  if (groups.isNotEmpty && threads.isNotEmpty)
+                    const Divider(color: AirColors.divider, height: 1),
+                  ...threads.map((t) => _buildChatTile(context, t)),
+                ],
+              );
+            },
       ),
       floatingActionButton: FloatingActionButton(
         backgroundColor: AirColors.bubbleMe,
@@ -347,6 +366,30 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
           }
         });
       },
+    );
+  }
+
+  Widget _buildGroupTile(BuildContext context, Group group) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      leading: Container(
+        width: 48, height: 48,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: AirColors.accent.withOpacity(0.15),
+          shape: BoxShape.circle,
+          border: Border.all(color: AirColors.accent.withOpacity(0.4)),
+        ),
+        child: const Icon(Icons.group, color: AirColors.accent, size: 22),
+      ),
+      title: Text(group.name,
+          style: const TextStyle(color: AirColors.textPrimary, fontWeight: FontWeight.w600, fontSize: 16)),
+      subtitle: Text('${group.memberUids.length} members',
+          style: const TextStyle(color: AirColors.textSecondary, fontSize: 13)),
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => GroupChatScreen(group: group)),
+      ),
     );
   }
 }

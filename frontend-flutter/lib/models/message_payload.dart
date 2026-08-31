@@ -18,6 +18,10 @@ class ChatMessage {
   final String? replyType;
   final bool? replyIsMe;
 
+  // Group context (null for 1:1). groupId == chatId when in a group.
+  final String? groupId;
+  final String? groupSenderName;
+
   ChatMessage({
     required this.id,
     required this.chatId,
@@ -35,6 +39,8 @@ class ChatMessage {
     this.replyText,
     this.replyType,
     this.replyIsMe,
+    this.groupId,
+    this.groupSenderName,
   });
 
   bool get hasReply => replyToId != null && replyToId!.isNotEmpty;
@@ -56,6 +62,8 @@ class ChatMessage {
         replyText: replyText,
         replyType: replyType,
         replyIsMe: replyIsMe,
+        groupId: groupId,
+        groupSenderName: groupSenderName,
       );
 
   Map<String, dynamic> toMap() => {
@@ -76,6 +84,8 @@ class ChatMessage {
         'reply_type': replyType,
         'reply_is_me':
             (replyIsMe == null) ? null : (replyIsMe! ? 1 : 0),
+        'group_id': groupId,
+        'group_sender_name': groupSenderName,
       };
 
   factory ChatMessage.fromMap(Map<String, dynamic> map) => ChatMessage(
@@ -97,5 +107,7 @@ class ChatMessage {
         replyIsMe: (map['reply_is_me'] == null)
             ? null
             : (map['reply_is_me'] == 1),
+        groupId: map['group_id'],
+        groupSenderName: map['group_sender_name'],
       );
 }

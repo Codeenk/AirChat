@@ -12,7 +12,9 @@ import '../core/network/notification_service.dart';
 import '../core/network/websocket_client.dart';
 import '../models/chat_thread.dart';
 import '../models/contact.dart';
+import '../models/group.dart';
 import '../models/message_payload.dart';
+import '../core/database/daos/group_dao.dart';
 import 'refresh_bus.dart';
 
 final currentUidProvider = StateProvider<String>((ref) => '');
@@ -168,7 +170,7 @@ class MessageRouter {
         recipientKeyPair: keyPair,
       );
 
-      final decoded = jsonDecode(decrypted);
+      final decoded = jsonDecode(decrypted) as Map<String, dynamic>;
       final messageType = decoded['type'] ?? 'text';
       final text = decoded['text'] ?? '';
       final mediaKey = decoded['mediaKey'];
@@ -176,8 +178,36 @@ class MessageRouter {
       final nonceHex = decoded['nonceHex'];
       final replyTo =
           (decoded['replyTo'] as Map<String, dynamic>?) ?? const {};
+      final groupId = decoded['groupId'] as String?;
+      final groupName = decoded['groupName'] as String?;
 
-      final chatId = _chatId(uid, senderUid);
+      // Group control messages: create/update local group, no chat bubble.
+      if (messageType == 'group_invite' ||
+          messageType == 'group_add' ||
+          messageType == 'group_kick') {
+        final gid = groupId ?? decoded['groupId'] as String? ?? '';
+        final gname = groupName ?? decoded['groupName'] as String? ?? 'Group';
+        final memberUids =
+            (decoded['memberUids'] as List<dynamic>?)?.cast<String>() ?? [];
+        if (gid.isNotEmpty) {
+          if (messageType == 'group_kick' &&
+              (decoded['kickedUid'] as String? ?? '') == uid) {
+            await GroupDao().deleteGroup(gid);
+          } else {
+            await GroupDao().insertGroup(Group(
+              id: gid,
+              name: gname,
+              memberUids: memberUids.isEmpty ? [uid, senderUid] : memberUids,
+              createdAt: timestamp,
+            ));
+          }
+          bus.fire(RefreshEvent(type: 'messages', chatId: gid));
+        }
+        return;
+      }
+
+      final isGroup = groupId != null && groupId!.isNotEmpty;
+      final chatId = isGroup ? groupId! : _chatId(uid, senderUid);
 
       // Resolve contact name inline (fast, no network) — use fallback if unknown.
       final existing = await contactDao.getContactByUid(senderUid);
@@ -198,7 +228,7 @@ class MessageRouter {
         mediaKey: mediaKey,
         secretKeyHex: secretKeyHex,
         nonceHex: nonceHex,
-        type: messageType,
+        type: isGroup ? 'text' : messageType,
         timestamp: timestamp,
         isMe: false,
         status: 'delivered',
@@ -206,38 +236,49 @@ class MessageRouter {
         replyText: (replyTo['text'] as String?) ?? '',
         replyType: (replyTo['type'] as String?) ?? 'text',
         replyIsMe: replyTo['isMe'] as bool?,
+        groupId: isGroup ? groupId : null,
+        groupSenderName: isGroup ? contactName : null,
       );
 
       await messageDao.insertMessage(message);
-      final chatOpen = MessageRouter.openChatId == chatId;
-      await chatDao.updatePreviewPreservingUnread(ChatThread(
-        id: chatId,
-        contactUid: senderUid,
-        lastMessage: text.isEmpty ? '📎 $messageType' : text,
-        lastMessageTime: timestamp,
-      ));
 
-      // Unread badge: only count messages that arrived outside the open chat.
-      if (!chatOpen) {
-        await chatDao.incrementUnread(chatId);
-      }
+      if (isGroup) {
+        // Group messages: home list pulls from groups+messages; just notify.
+        bus.fire(RefreshEvent(type: 'messages', chatId: chatId));
+        if (!NotificationService.isAppForeground) {
+          final gname = groupName ?? 'Group';
+          await NotificationService.instance.showMessageNotification(
+            title: '$gname • $contactName',
+            body: text.isEmpty ? '📎 $messageType' : text,
+            senderUid: chatId,
+          );
+        }
+      } else {
+        final chatOpen = MessageRouter.openChatId == chatId;
+        await chatDao.updatePreviewPreservingUnread(ChatThread(
+          id: chatId,
+          contactUid: senderUid,
+          lastMessage: text.isEmpty ? '📎 $messageType' : text,
+          lastMessageTime: timestamp,
+        ));
 
-      // Notify live UI surfaces (open chat, home list) instantly
-      bus.fire(RefreshEvent(type: 'messages', chatId: chatId));
+        if (!chatOpen) {
+          await chatDao.incrementUnread(chatId);
+        }
 
-      // Chat is open & visible → the user has effectively read it already.
-      // Send a read receipt so the sender's ticks advance honestly.
-      if (NotificationService.isAppForeground && MessageRouter.openChatId == chatId) {
-        client.sendReadReceipt(packetId: packetId, senderUid: senderUid);
-      }
+        bus.fire(RefreshEvent(type: 'messages', chatId: chatId));
 
-      // Background/terminated: stacked per-sender notification (MessagingStyle).
-      if (!NotificationService.isAppForeground) {
-        await NotificationService.instance.showMessageNotification(
-          title: contactName,
-          body: text.isEmpty ? '📎 $messageType' : text,
-          senderUid: senderUid,
-        );
+        if (NotificationService.isAppForeground && MessageRouter.openChatId == chatId) {
+          client.sendReadReceipt(packetId: packetId, senderUid: senderUid);
+        }
+
+        if (!NotificationService.isAppForeground) {
+          await NotificationService.instance.showMessageNotification(
+            title: contactName,
+            body: text.isEmpty ? '📎 $messageType' : text,
+            senderUid: senderUid,
+          );
+        }
       }
 
       // Background directory resolution — never blocks message delivery.

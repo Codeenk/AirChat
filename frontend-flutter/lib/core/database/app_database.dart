@@ -25,7 +25,7 @@ class AppDatabase {
       return await databaseFactoryFfiWeb.openDatabase(
         '/airchat/airchat_web.db',
         options: OpenDatabaseOptions(
-          version: 3,
+          version: 4,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         ),
@@ -39,7 +39,7 @@ class AppDatabase {
       return await openDatabase(
         path,
         password: masterKey,
-        version: 3,
+        version: 4,
         onCreate: _onCreate,
         onUpgrade: _onUpgrade,
       );
@@ -53,7 +53,7 @@ class AppDatabase {
         return await openDatabase(
           path,
           password: masterKey,
-          version: 3,
+          version: 4,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         );
@@ -96,6 +96,15 @@ class AppDatabase {
         'CREATE INDEX idx_chat_threads_time ON chat_threads(last_message_time DESC)');
 
     await db.execute('''
+      CREATE TABLE groups (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        member_uids TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    ''');
+
+    await db.execute('''
       CREATE TABLE messages (
         id TEXT PRIMARY KEY,
         chat_id TEXT NOT NULL,
@@ -112,11 +121,15 @@ class AppDatabase {
         reply_to_id TEXT,
         reply_text TEXT,
         reply_type TEXT,
-        reply_is_me INTEGER
+        reply_is_me INTEGER,
+        group_id TEXT,
+        group_sender_name TEXT
       )
     ''');
     await db.execute(
         'CREATE INDEX idx_messages_chat_time ON messages(chat_id, timestamp ASC)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_messages_group ON messages(group_id, timestamp ASC)');
   }
 
   static Future<void> _onUpgrade(
@@ -142,6 +155,29 @@ class AppDatabase {
           'CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages(chat_id, timestamp ASC)');
       await db.execute(
           'CREATE INDEX IF NOT EXISTS idx_chat_threads_time ON chat_threads(last_message_time DESC)');
+    }
+    if (oldVersion < 4) {
+      // v4: groups + group columns on messages (all nullable — 1:1 flows untouched).
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS groups (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          member_uids TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        )
+      ''');
+      for (final sql in [
+        'ALTER TABLE messages ADD COLUMN group_id TEXT',
+        'ALTER TABLE messages ADD COLUMN group_sender_name TEXT',
+      ]) {
+        try {
+          await db.execute(sql);
+        } catch (e) {
+          if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;
+        }
+      }
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_messages_group ON messages(group_id, timestamp ASC)');
     }
   }
 

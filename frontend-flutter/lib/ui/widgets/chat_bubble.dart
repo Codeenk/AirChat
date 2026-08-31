@@ -23,8 +23,8 @@ class ChatBubble extends StatefulWidget {
   final String? replyType;
   final bool? replyIsMe;
 
-  // Display name used in the quote header ("You" vs peer name).
   final String peerName;
+  final String? groupSenderName;
 
   // Swipe-right-to-reply + tap-quote-to-jump wiring.
   final VoidCallback? onSwipeReply;
@@ -53,6 +53,7 @@ class ChatBubble extends StatefulWidget {
     this.replyType,
     this.replyIsMe,
     this.peerName = '',
+    this.groupSenderName,
     this.onSwipeReply,
     this.onTapQuote,
     this.onDeleteForMe,
@@ -407,6 +408,14 @@ class _ChatBubbleState extends State<ChatBubble> {
                     ? "Expired after 24h — recipient was offline. Tap to resend"
                     : "Not delivered — tap to retry",
                 style: const TextStyle(color: AirColors.error, fontSize: 11),
+              ),
+            ),
+          if (widget.groupSenderName != null && widget.groupSenderName!.isNotEmpty && !widget.isMe)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 3),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(widget.groupSenderName!, style: const TextStyle(color: AirColors.accent, fontSize: 11, fontWeight: FontWeight.w700)),
               ),
             ),
           if (_hasReply) _buildQuoteBlock(metaColor),
