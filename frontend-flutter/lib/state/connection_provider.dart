@@ -213,15 +213,14 @@ class MessageRouter {
       }
 
       final isGroup = groupId != null && groupId.isNotEmpty;
-      if (isGroup) {
-        final localGroup = await GroupDao().getGroupById(groupId!);
-        if (localGroup != null &&
-            !localGroup.memberUids.contains(senderUid)) {
+      if (groupId != null && groupId.isNotEmpty) {
+        final localGroup = await GroupDao().getGroupById(groupId);
+        if (localGroup != null && !localGroup.memberUids.contains(senderUid)) {
           // Sender was removed/left — ignore their stale messages.
           return;
         }
       }
-      final chatId = isGroup ? groupId! : _chatId(uid, senderUid);
+      final chatId = isGroup ? groupId as String : _chatId(uid, senderUid);
 
       // Resolve contact name inline (fast, no network) — use fallback if unknown.
       final existing = await contactDao.getContactByUid(senderUid);

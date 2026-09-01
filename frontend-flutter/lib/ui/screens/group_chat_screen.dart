@@ -122,8 +122,8 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
     final fresh = await GroupDao().getGroupById(group.id);
     if (fresh == null || !fresh.memberUids.contains(myUid)) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('You left this group')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('You left this group')));
         Navigator.of(context).popUntil((r) => r.isFirst);
       }
       return;
