@@ -9,7 +9,6 @@ import '../core/database/daos/contact_dao.dart';
 import '../core/database/daos/group_dao.dart';
 import '../models/group.dart';
 import 'connection_provider.dart';
-import 'refresh_bus.dart';
 
 final groupDaoProvider = Provider((_) => GroupDao());
 
