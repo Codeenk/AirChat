@@ -96,10 +96,10 @@ class GroupActions {
     final group = await dao.getGroupById(groupId);
     if (group == null) return;
     final remaining = group.memberUids.where((u) => u != myUid).toList();
-    if (remaining.isEmpty) {
-      await dao.deleteGroup(groupId);
-    } else {
-      await dao.updateMembers(groupId, remaining);
+    // Leaver's device: delete the group entirely (no lingering thread where
+    // they could still send). Remaining members receive the kick.
+    await dao.deleteGroup(groupId);
+    if (remaining.isNotEmpty) {
       await _broadcastGroupControl(
         groupId: groupId,
         type: 'group_kick',

@@ -19,6 +19,7 @@ import '../../core/network/api_client.dart';
 import '../../core/network/media_uploader.dart';
 import '../../core/theme/colors.dart';
 import '../../state/refresh_bus.dart';
+import '../../core/database/daos/group_dao.dart';
 import '../../models/group.dart';
 import '../../models/message_payload.dart';
 import '../../state/chat_provider.dart';
@@ -118,6 +119,15 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
     if (_myUid == null) return;
     final myUid = _myUid!;
     final group = widget.group;
+    final fresh = await GroupDao().getGroupById(group.id);
+    if (fresh == null || !fresh.memberUids.contains(myUid)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('You left this group')));
+        Navigator.of(context).popUntil((r) => r.isFirst);
+      }
+      return;
+    }
     final packetId = const Uuid().v4();
     final ts = DateTime.now().millisecondsSinceEpoch;
     final msg = ChatMessage(

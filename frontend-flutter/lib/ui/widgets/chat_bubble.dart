@@ -459,7 +459,7 @@ class _ChatBubbleState extends State<ChatBubble> {
         ),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.end,
+        crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
           if (isFailed)
@@ -477,21 +477,18 @@ class _ChatBubbleState extends State<ChatBubble> {
               !widget.isMe)
             Padding(
               padding: const EdgeInsets.only(bottom: 3),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxWidth: MediaQuery.of(context).size.width * 0.78 - 28,
-                  ),
-                  child: Text(
-                    widget.groupSenderName!,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: AirColors.accent,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                    ),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: MediaQuery.of(context).size.width * 0.78 - 28,
+                ),
+                child: Text(
+                  widget.groupSenderName!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AirColors.accent,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
               ),
@@ -499,22 +496,25 @@ class _ChatBubbleState extends State<ChatBubble> {
           if (_hasReply) _buildQuoteBlock(metaColor),
           _buildContent(),
           const SizedBox(height: 4),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (widget.type != 'text') ...[
-                Icon(Icons.lock, size: 10, color: metaColor),
-                const SizedBox(width: 3),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (widget.type != 'text') ...[
+                  Icon(Icons.lock, size: 10, color: metaColor),
+                  const SizedBox(width: 3),
+                ],
+                Text(
+                  formattedTime,
+                  style: TextStyle(color: metaColor, fontSize: 11),
+                ),
+                if (widget.isMe) ...[
+                  const SizedBox(width: 4),
+                  _buildStatusIcon(),
+                ],
               ],
-              Text(
-                formattedTime,
-                style: TextStyle(color: metaColor, fontSize: 11),
-              ),
-              if (widget.isMe) ...[
-                const SizedBox(width: 4),
-                _buildStatusIcon(),
-              ],
-            ],
+            ),
           ),
         ],
       ),
