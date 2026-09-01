@@ -4,7 +4,6 @@ import 'dart:io' as io;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:sqflite_common/sqlite_api.dart' show OpenDatabaseOptions;
 import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart'
     show databaseFactoryFfiWeb;
 import 'package:sqflite_sqlcipher/sqflite.dart';

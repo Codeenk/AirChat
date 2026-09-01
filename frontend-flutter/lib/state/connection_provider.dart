@@ -220,7 +220,7 @@ class MessageRouter {
           return;
         }
       }
-      final chatId = isGroup ? groupId as String : _chatId(uid, senderUid);
+      final chatId = (groupId != null && groupId.isNotEmpty) ? groupId : _chatId(uid, senderUid);
 
       // Resolve contact name inline (fast, no network) — use fallback if unknown.
       final existing = await contactDao.getContactByUid(senderUid);
