@@ -428,17 +428,18 @@ class _ChatBubbleState extends State<ChatBubble> {
     // Use plain Container — no AnimatedContainer overhead for non-highlighted
     // bubbles (the vast majority). Highlight border change is instant, which
     // is fine for a 1.4s flash effect.
-    final bubble = Container(
-      margin: EdgeInsets.only(
-        top: 3,
-        bottom: 3,
-        left: widget.isMe ? 48 : 12,
-        right: widget.isMe ? 12 : 48,
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-      constraints: BoxConstraints(
-        maxWidth: MediaQuery.of(context).size.width * 0.78,
-      ),
+    final bubbleMaxWidth = MediaQuery.of(context).size.width * 0.78;
+    final bubble = ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: bubbleMaxWidth),
+      child: IntrinsicWidth(
+        child: Container(
+          margin: EdgeInsets.only(
+            top: 3,
+            bottom: 3,
+            left: widget.isMe ? 48 : 12,
+            right: widget.isMe ? 12 : 48,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
       decoration: BoxDecoration(
         color: bubbleColor,
         border: Border.all(
@@ -477,14 +478,10 @@ class _ChatBubbleState extends State<ChatBubble> {
               !widget.isMe)
             Padding(
               padding: const EdgeInsets.only(bottom: 3),
-              child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxWidth: MediaQuery.of(context).size.width * 0.78 - 28,
-                ),
-                child: Text(
-                  widget.groupSenderName!,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+              child: Text(
+                widget.groupSenderName!,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AirColors.accent,
                     fontSize: 11,
@@ -496,27 +493,27 @@ class _ChatBubbleState extends State<ChatBubble> {
           if (_hasReply) _buildQuoteBlock(metaColor),
           _buildContent(),
           const SizedBox(height: 4),
-          Align(
-            alignment: Alignment.centerRight,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (widget.type != 'text') ...[
-                  Icon(Icons.lock, size: 10, color: metaColor),
-                  const SizedBox(width: 3),
-                ],
-                Text(
-                  formattedTime,
-                  style: TextStyle(color: metaColor, fontSize: 11),
-                ),
-                if (widget.isMe) ...[
-                  const SizedBox(width: 4),
-                  _buildStatusIcon(),
-                ],
+          Row(
+            mainAxisSize: MainAxisSize.max,
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              if (widget.type != 'text') ...[
+                Icon(Icons.lock, size: 10, color: metaColor),
+                const SizedBox(width: 3),
               ],
-            ),
+              Text(
+                formattedTime,
+                style: TextStyle(color: metaColor, fontSize: 11),
+              ),
+              if (widget.isMe) ...[
+                const SizedBox(width: 4),
+                _buildStatusIcon(),
+              ],
+            ],
           ),
         ],
+          ),
+        ),
       ),
     );
 
