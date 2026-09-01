@@ -152,7 +152,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
       replyType: _replyTo?.type ?? 'text',
       replyIsMe: _replyTo?.isMe,
       groupId: group.id,
-      groupSenderName: 'You',
+      groupSenderName: senderName,
     );
     await MessageDao().insertMessage(msg);
     if (mounted) ref.invalidate(activeChatMessagesProvider(group.id));
@@ -273,6 +273,12 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
   }
 
   Future<String> _resolveMyDisplayName(String uid) async {
+    // 1. Primary: use the real registered username from secure storage.
+    try {
+      final storedName = await KeyStore.getUsername();
+      if (storedName != null && storedName.isNotEmpty) return storedName;
+    } catch (_) {}
+    // 2. Fallback: look up in contacts DB.
     try {
       final contact = await ContactDao().getContactByUid(uid);
       if (contact != null && contact.username.isNotEmpty) return contact.username;
