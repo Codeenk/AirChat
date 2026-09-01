@@ -27,7 +27,7 @@ class AppDatabase {
       return await databaseFactoryFfiWeb.openDatabase(
         '/airchat/airchat_web.db',
         options: OpenDatabaseOptions(
-          version: 4,
+          version: 5,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         ),
@@ -41,7 +41,7 @@ class AppDatabase {
       return await openDatabase(
         path,
         password: masterKey,
-        version: 4,
+        version: 5,
         onCreate: _onCreate,
         onUpgrade: _onUpgrade,
       );
@@ -55,7 +55,7 @@ class AppDatabase {
         return await openDatabase(
           path,
           password: masterKey,
-          version: 4,
+          version: 5,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         );
@@ -189,6 +189,14 @@ class AppDatabase {
       await db.execute(
         'CREATE INDEX IF NOT EXISTS idx_messages_group ON messages(group_id, timestamp ASC)',
       );
+    }
+    if (oldVersion < 5) {
+      // v5: group_key column for symmetric group encryption.
+      try {
+        await db.execute('ALTER TABLE groups ADD COLUMN group_key TEXT');
+      } catch (e) {
+        if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;
+      }
     }
   }
 

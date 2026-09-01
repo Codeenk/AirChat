@@ -59,6 +59,12 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     return handleTestPush(request, env);
   }
 
+  // 3d. Register group membership — relay stores groupId→memberUids in D1
+  // so it can route group_packet wakes to all members.
+  if (url.pathname === "/api/group/register" && request.method === "POST") {
+    return handleRegisterGroup(request, env);
+  }
+
   // 4. Ephemeral Encrypted Media Upload (KV, auto-expires in 24h)
   if (url.pathname.startsWith("/api/media/upload/") && request.method === "PUT") {
     const fileKey = url.pathname.replace("/api/media/upload/", "");
@@ -137,4 +143,41 @@ import { sendSilentWake } from "./utils/fcm";
 async function sendTestPush(env: any, fcmToken: string): Promise<boolean> {
   // Reuses the wake sender with a fixed uid so the client can identify it.
   return sendSilentWake(env, fcmToken, "self_test", "AirChat");
+}
+
+// Register group membership in D1 — the relay uses this to know which
+// members to wake for group_packet sends. Called by the group creator
+// whenever the group is created, members are added, or a member leaves.
+async function handleRegisterGroup(request: any, env: Env): Promise<Response> {
+  try {
+    const body = (await request.json()) as {
+      groupId?: string;
+      groupName?: string;
+      memberUids?: string[];
+    };
+    if (!body.groupId || !Array.isArray(body.memberUids) || body.memberUids.length === 0) {
+      return new Response(JSON.stringify({ error: "Missing groupId or memberUids" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const now = Date.now();
+    const stmts = body.memberUids.map((uid: string) =>
+      env.DB.prepare(
+        `INSERT OR REPLACE INTO group_memberships (group_id, member_uid, group_name, created_at)
+         VALUES (?, ?, ?, ?)`
+      ).bind(body.groupId!, uid, body.groupName || "", now)
+    );
+    await env.DB.batch(stmts);
+
+    return new Response(JSON.stringify({ ok: true, members: body.memberUids.length }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (e: any) {
+    return new Response(JSON.stringify({ error: e?.message || "Failed" }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 }

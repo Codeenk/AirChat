@@ -112,4 +112,54 @@ class SodiumEngine {
     );
     return utf8.decode(decryptedBytes);
   }
+
+  // ─── SYMMETRIC GROUP ENCRYPTION ───
+  // ChaCha20-Poly1305 with a pre-shared groupKey (32 bytes, base64-encoded).
+  // No ephemeral keys — all members share the same key.
+
+  /// Encrypts a plaintext using the shared groupKey (ChaCha20-Poly1305).
+  /// Returns a simple {ct, n} payload (no epk needed for symmetric).
+  Future<CryptoPayload> encryptGroupMessage({
+    required String plainText,
+    required String groupKeyBase64,
+  }) async {
+    final keyBytes = base64Decode(groupKeyBase64);
+    final secretKey = SecretKey(keyBytes);
+    final nonce = cipher.newNonce();
+    final clearBytes = utf8.encode(plainText);
+
+    final secretBox = await cipher.encrypt(
+      clearBytes,
+      secretKey: secretKey,
+      nonce: nonce,
+    );
+
+    return CryptoPayload(
+      cipherText: base64Encode(secretBox.concatenation()),
+      nonce: base64Encode(nonce),
+      senderEphemeralPublicKey: '', // not used for symmetric
+    );
+  }
+
+  /// Decrypts a group message using the shared groupKey.
+  Future<String> decryptGroupMessage({
+    required CryptoPayload payload,
+    required String groupKeyBase64,
+  }) async {
+    final keyBytes = base64Decode(groupKeyBase64);
+    final secretKey = SecretKey(keyBytes);
+    final concatenated = base64Decode(payload.cipherText);
+
+    final secretBox = SecretBox.fromConcatenation(
+      concatenated,
+      nonceLength: 12,
+      macLength: 16,
+    );
+
+    final decryptedBytes = await cipher.decrypt(
+      secretBox,
+      secretKey: secretKey,
+    );
+    return utf8.decode(decryptedBytes);
+  }
 }

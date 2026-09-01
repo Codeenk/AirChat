@@ -11,7 +11,7 @@ interface SocketLease {
   lastSeen: number;
 }
 
-import { sendSilentWake, sendDeliveryFailedWake } from "../utils/fcm";
+import { sendSilentWake, sendDeliveryFailedWake, sendGroupWake } from "../utils/fcm";
 
 const TTL_MS = 24 * 60 * 60 * 1000; // 24h ephemeral cache — the only server storage
 const LEASE_MS = 90 * 1000; // socket lease: ping every 25s refreshes; >90s = dead wire
@@ -64,6 +64,9 @@ export class ConnectionRelay {
     // Deliver queued ephemeral messages stored persistently in DO storage
     await this.flushEphemeralQueue(ws, uid);
 
+    // Also flush group inboxes for all groups this user belongs to.
+    await this.flushGroupInboxes(ws, uid);
+
     ws.addEventListener("message", async (event) => {
       try {
         const data = JSON.parse(event.data as string);
@@ -110,6 +113,65 @@ export class ConnectionRelay {
           }
         }
 
+        // ─── GROUP PACKET: one encrypted payload → stored once, woken to all members ───
+        if (data.action === "send_group_packet") {
+          const { groupId, groupName, encryptedPayload, packetId, senderName } = data;
+          if (!groupId || !packetId) {
+            ws.send(JSON.stringify({ type: "error", message: "Missing groupId or packetId" }));
+            return;
+          }
+
+          // Store ONE copy in group inbox (keyed by groupId, not by memberUid)
+          const groupKey = `grp:${groupId}:${packetId}`;
+          await this.state.storage.put(groupKey, {
+            id: packetId,
+            senderUid: uid,
+            groupId,
+            groupName: groupName || "",
+            payload: encryptedPayload,
+            timestamp: Date.now(),
+          } as EphemeralPacket & { groupId: string; groupName: string });
+
+          // Look up all group members from D1 and wake each offline member
+          const members = await this.getGroupMembers(groupId);
+          let wokenCount = 0;
+          for (const memberUid of members) {
+            if (memberUid === uid) continue; // don't wake the sender
+            const memberLease = this.getLiveLease(memberUid);
+            if (memberLease) {
+              // Member is online — push directly to their wire
+              memberLease.ws.send(JSON.stringify({
+                type: "group_packet",
+                senderUid: uid,
+                senderName: senderName || "",
+                groupId,
+                groupName: groupName || "",
+                packetId,
+                payload: encryptedPayload,
+                timestamp: Date.now(),
+              }));
+            } else {
+              // Member offline — FCM wake with group context
+              await this.dispatchGroupPushWake(memberUid, uid, groupId, groupName || "", senderName || "");
+              wokenCount++;
+            }
+          }
+
+          console.log(`[relay] group_packet ${packetId} for ${groupId}: ${members.length} members, ${wokenCount} wakes`);
+          ws.send(JSON.stringify({ type: "packet_status", packetId, status: "relayed" }));
+          return;
+        }
+
+        // ─── REGISTER GROUP: store membership for wake routing ───
+        if (data.action === "register_group") {
+          const { groupId, groupName, memberUids } = data;
+          if (!groupId || !Array.isArray(memberUids)) return;
+
+          await this.registerGroupMembership(groupId, groupName || "", memberUids);
+          console.log(`[relay] registered group ${groupId}: ${memberUids.length} members`);
+          return;
+        }
+
         if (data.action === "ack") {
           const { packetId, senderUid } = data;
           await this.state.storage.delete(`msg:${uid}:${packetId}`);
@@ -118,6 +180,14 @@ export class ConnectionRelay {
           if (senderLease) {
             senderLease.ws.send(JSON.stringify({ type: "delivery_receipt", packetId, status: "delivered" }));
           }
+        }
+
+        if (data.action === "ack_group") {
+          const { packetId, groupId } = data;
+          if (groupId && packetId) {
+            await this.state.storage.delete(`grp:${groupId}:${packetId}`);
+          }
+          return;
         }
 
         if (data.action === "read_receipt") {
@@ -187,6 +257,81 @@ export class ConnectionRelay {
     }
   }
 
+  // ─── GROUP INBOX: flush all group packets for this user ───
+  private async flushGroupInboxes(ws: WebSocket, uid: string): Promise<void> {
+    // Get all groups this user belongs to
+    const groupIds = await this.getUserGroupIds(uid);
+    if (groupIds.length === 0) return;
+
+    let totalFlushed = 0;
+    for (const groupId of groupIds) {
+      const prefix = `grp:${groupId}:`;
+      const queuedMap = await this.state.storage.list<any>({ prefix });
+      for (const [key, msg] of queuedMap) {
+        ws.send(JSON.stringify({
+          type: "group_packet",
+          senderUid: msg.senderUid,
+          senderName: "",
+          groupId: msg.groupId || groupId,
+          groupName: msg.groupName || "",
+          packetId: msg.id,
+          payload: msg.payload,
+          timestamp: msg.timestamp,
+        }));
+        await this.state.storage.delete(key);
+        totalFlushed++;
+      }
+    }
+    if (totalFlushed > 0) {
+      console.log(`[relay] flushed ${totalFlushed} group packets for ${uid}`);
+    }
+  }
+
+  // ─── GROUP MEMBERSHIP: D1 storage ───
+  private async registerGroupMembership(
+    groupId: string,
+    groupName: string,
+    memberUids: string[]
+  ): Promise<void> {
+    if (!this.env.DB) return;
+    try {
+      // Upsert all members — use batch for efficiency
+      const stmts = memberUids.map(uid =>
+        this.env.DB.prepare(
+          `INSERT OR REPLACE INTO group_memberships (group_id, member_uid, group_name, created_at)
+           VALUES (?, ?, ?, ?)`
+        ).bind(groupId, uid, groupName, Date.now())
+      );
+      await this.env.DB.batch(stmts);
+    } catch (e) {
+      console.log(`[relay] register_group failed: ${e}`);
+    }
+  }
+
+  private async getGroupMembers(groupId: string): Promise<string[]> {
+    if (!this.env.DB) return [];
+    try {
+      const rows = await this.env.DB.prepare(
+        "SELECT member_uid FROM group_memberships WHERE group_id = ?"
+      ).bind(groupId).all();
+      return rows.results?.map((r: any) => r.member_uid as string) ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  private async getUserGroupIds(uid: string): Promise<string[]> {
+    if (!this.env.DB) return [];
+    try {
+      const rows = await this.env.DB.prepare(
+        "SELECT DISTINCT group_id FROM group_memberships WHERE member_uid = ?"
+      ).bind(uid).all();
+      return rows.results?.map((r: any) => r.group_id as string) ?? [];
+    } catch {
+      return [];
+    }
+  }
+
   // 24-hour expiry alarm: the ephemeral cache is the ONLY server storage, so
   // expired messages are destroyed — and every sender is honestly notified
   // that their message was not delivered.
@@ -211,6 +356,14 @@ export class ConnectionRelay {
       }
     }
 
+    // Also expire group packets
+    const allGroupPackets = await this.state.storage.list<any>({ prefix: "grp:" });
+    for (const [key, packet] of allGroupPackets) {
+      if (packet.timestamp < cutoff) {
+        toDelete.push(key);
+      }
+    }
+
     if (toDelete.length > 0) {
       await this.state.storage.delete(toDelete);
     }
@@ -222,7 +375,8 @@ export class ConnectionRelay {
 
     // Reschedule alarm only if messages remain
     const remaining = await this.state.storage.list({ prefix: "msg:", limit: 1 });
-    if (remaining.size > 0) {
+    const remainingGroup = await this.state.storage.list({ prefix: "grp:", limit: 1 });
+    if (remaining.size > 0 || remainingGroup.size > 0) {
       await this.state.storage.setAlarm(now + TTL_MS);
     }
   }
@@ -281,6 +435,32 @@ export class ConnectionRelay {
       console.log(`[relay] wake sent=${ok} to ${recipientUid}`);
     } catch {
       // Ignore push dispatch errors if FCM is unconfigured
+    }
+  }
+
+  // FCM push wake for group messages — includes groupId + groupName + senderName
+  private async dispatchGroupPushWake(
+    recipientUid: string,
+    senderUid: string,
+    groupId: string,
+    groupName: string,
+    senderName: string,
+  ): Promise<void> {
+    try {
+      const row: { fcm_token: string | null } | null = await this.env.DB.prepare(
+        "SELECT fcm_token FROM users WHERE uid = ?"
+      ).bind(recipientUid).first();
+
+      const fcmToken = row?.fcm_token;
+      if (!fcmToken) {
+        console.log(`[relay] group wake skip: no fcm token for ${recipientUid}`);
+        return;
+      }
+
+      const ok = await sendGroupWake(this.env, fcmToken, senderUid, senderName, groupId, groupName);
+      console.log(`[relay] group wake sent=${ok} to ${recipientUid} for group ${groupId}`);
+    } catch {
+      // Ignore push dispatch errors
     }
   }
 }

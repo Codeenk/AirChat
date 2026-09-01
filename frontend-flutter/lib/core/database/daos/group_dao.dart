@@ -43,6 +43,16 @@ class GroupDao {
     );
   }
 
+  Future<void> updateGroupKey(String id, String groupKey) async {
+    final db = await AppDatabase.instance;
+    await db.update(
+      'groups',
+      {'group_key': groupKey},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   Future<void> deleteGroup(String id) async {
     final db = await AppDatabase.instance;
     await db.delete('groups', where: 'id = ?', whereArgs: [id]);

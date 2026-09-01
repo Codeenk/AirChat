@@ -153,6 +153,58 @@ export async function sendSilentWake(
   }
 }
 
+// Data-only push for group messages — wakes the background isolate with
+// groupId + groupName + senderName so the notification can show the
+// group context and the client can fetch from the group inbox.
+export async function sendGroupWake(
+  env: { FCM_SERVICE_ACCOUNT_JSON?: string; FCM_PROJECT_ID?: string },
+  fcmToken: string,
+  senderUid: string,
+  senderName: string,
+  groupId: string,
+  groupName: string,
+): Promise<boolean> {
+  if (!env.FCM_SERVICE_ACCOUNT_JSON || !env.FCM_PROJECT_ID) {
+    return false;
+  }
+
+  try {
+    const accessToken = await getFcmAccessToken(env.FCM_SERVICE_ACCOUNT_JSON);
+
+    const res = await fetch(
+      `https://fcm.googleapis.com/v1/projects/${env.FCM_PROJECT_ID}/messages:send`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: {
+            token: fcmToken,
+            data: {
+              type: "group_wake",
+              senderUid,
+              senderName,
+              groupId,
+              groupName,
+            },
+            android: { priority: "HIGH" },
+            apns: {
+              payload: { aps: { contentAvailable: true } },
+              headers: { "apns-push-type": "background", "apns-priority": "5" },
+            },
+          },
+        }),
+      },
+    );
+
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 // Data-only push telling a sender that their message expired undelivered
 // (24h cache lifetime reached). Contains only packet ids — zero content.
 export async function sendDeliveryFailedWake(

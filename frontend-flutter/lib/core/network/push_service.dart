@@ -16,6 +16,7 @@ import '../crypto/sodium_engine.dart';
 import '../database/app_database.dart';
 import '../database/daos/chat_dao.dart';
 import '../database/daos/contact_dao.dart';
+import '../database/daos/group_dao.dart';
 import '../database/daos/message_dao.dart';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -114,16 +115,35 @@ Future<String> _resolveSenderName(String? senderUid) async {
 Future<void> _showWakeNotification(
   RemoteMessage message, {
   String? bodyOverride,
+  String? titleOverride,
 }) async {
   final data = message.data;
-  if (data['type'] != 'wake') return;
+  final wakeType = data['type'] as String?;
+
+  // Group wake: show "GroupName • SenderName"
+  if (wakeType == 'group_wake') {
+    final groupName = (data['groupName'] as String?)?.trim() ?? 'Group';
+    final senderName = (data['senderName'] as String?)?.trim();
+    final name = (senderName != null && senderName.isNotEmpty)
+        ? senderName
+        : await _resolveSenderName(data['senderUid'] as String?);
+    await NotificationService.instance.showMessageNotification(
+      title: titleOverride ?? '$groupName • $name',
+      body: bodyOverride ?? 'New message in $groupName',
+      senderUid: data['groupId'] as String?,
+    );
+    return;
+  }
+
+  // Regular wake
+  if (wakeType != 'wake') return;
 
   final serverName = (data['senderName'] as String?)?.trim();
   final name = (serverName != null && serverName.isNotEmpty)
       ? serverName
       : await _resolveSenderName(data['senderUid'] as String?);
   await NotificationService.instance.showMessageNotification(
-    title: name,
+    title: titleOverride ?? name,
     body: bodyOverride ?? 'You have a new message',
     senderUid: data['senderUid'] as String?,
   );
@@ -132,6 +152,17 @@ Future<void> _showWakeNotification(
 void _handleWake(RemoteMessage message) {
   // Foreground: MessageRouter surfaces messages in-app already.
   if (NotificationService.isAppForeground) return;
+  final wakeType = message.data['type'] as String?;
+  if (wakeType == 'group_wake') {
+    _showGroupWakeNotification(message);
+  } else {
+    _showWakeNotification(message);
+  }
+}
+
+/// Foreground group wake: show a notification immediately since the WS
+/// MessageRouter may not handle it fast enough.
+void _showGroupWakeNotification(RemoteMessage message) {
   _showWakeNotification(message);
 }
 
@@ -164,16 +195,38 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     // isolate fetches the queued message.
     await NativeBridge.startWakeGuard();
 
-    // Data-only wake: try to fetch + decrypt the queued message over the WS
-    // (time-boxed) so the notification shows the REAL text. Falls back
-    // to the generic body on timeout/offline.
+    // Route to the correct fetch path based on wake type.
+    final wakeType = message.data['type'] as String?;
     String? realText;
+    String? groupTitleOverride;
     try {
-      realText = await _fetchQueuedMessage(message);
+      if (wakeType == 'group_wake') {
+        realText = await _fetchGroupMessage(message);
+      } else {
+        realText = await _fetchQueuedMessage(message);
+        // _fetchQueuedMessage may have detected a legacy group message.
+        // Check the DB for the groupId to show the correct notification.
+        if (realText != null && message.data['senderUid'] != null) {
+          final groupId = await _detectLegacyGroupMessage(
+            message.data['senderUid'] as String,
+          );
+          if (groupId != null) {
+            final group = await GroupDao().getGroupById(groupId);
+            final senderName =
+                await _resolveSenderName(message.data['senderUid'] as String);
+            groupTitleOverride =
+                '${group?.name ?? 'Group'} • $senderName';
+          }
+        }
+      }
     } catch (e) {
       debugPrint('[AirChat][bg] enrich failed: $e');
     }
-    await _showWakeNotification(message, bodyOverride: realText);
+    await _showWakeNotification(
+      message,
+      bodyOverride: realText,
+      titleOverride: groupTitleOverride,
+    );
     debugPrint(
       '[AirChat][bg] wake notification shown (real=${realText != null})',
     );
@@ -181,6 +234,25 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     debugPrint('[AirChat][bg] handler failed: $e\n$st');
     CrashReporter.recordError(error: e, stackTrace: st, source: 'fcm-bg');
   }
+}
+
+/// Checks if the most recent message from senderUid is a legacy group message
+/// (arrived via the 1:1 path but contains groupId). Returns the groupId if so.
+Future<String?> _detectLegacyGroupMessage(String senderUid) async {
+  try {
+    final db = await AppDatabase.instance;
+    final maps = await db.query(
+      'messages',
+      where: 'sender_uid = ? AND group_id IS NOT NULL',
+      whereArgs: [senderUid],
+      orderBy: 'timestamp DESC',
+      limit: 1,
+    );
+    if (maps.isNotEmpty) {
+      return maps.first['group_id'] as String?;
+    }
+  } catch (_) {}
+  return null;
 }
 
 /// Records a successful push round-trip for the Notification Health screen.
@@ -291,7 +363,32 @@ Future<String?> _fetchQueuedMessage(RemoteMessage message) async {
               (msg['timestamp'] as int?) ??
               DateTime.now().millisecondsSinceEpoch;
 
-          final chatId = buildChatId(myUid, senderUid);
+          // Detect legacy group messages that arrive via the 1:1 path
+          // (sent by old clients before group_packet support).
+          final payloadGroupId = decoded['groupId'] as String?;
+          final isGroupMsg = payloadGroupId != null && payloadGroupId.isNotEmpty;
+
+          String chatId;
+          if (isGroupMsg) {
+            // Route to group inbox, not personal DM.
+            chatId = payloadGroupId;
+          } else {
+            chatId = buildChatId(myUid, senderUid);
+          }
+
+          // Resolve sender name for group messages.
+          String groupSenderName = '';
+          if (isGroupMsg) {
+            groupSenderName = decoded['senderName'] as String? ?? '';
+            if (groupSenderName.isEmpty) {
+              try {
+                final contact = await ContactDao().getContactByUid(senderUid);
+                if (contact != null && contact.username.isNotEmpty) {
+                  groupSenderName = contact.username;
+                }
+              } catch (_) {}
+            }
+          }
 
           // Persist so the app shows it on next open (idempotent by packetId).
           await MessageDao().insertMessage(
@@ -309,17 +406,22 @@ Future<String?> _fetchQueuedMessage(RemoteMessage message) async {
               replyText: (decoded['replyTo']?['text'] as String?) ?? '',
               replyType: (decoded['replyTo']?['type'] as String?) ?? 'text',
               replyIsMe: decoded['replyTo']?['isMe'] as bool?,
+              groupId: isGroupMsg ? payloadGroupId : null,
+              groupSenderName: isGroupMsg ? groupSenderName : null,
             ),
           );
-          await ChatDao().updatePreviewPreservingUnread(
-            ChatThread(
-              id: chatId,
-              contactUid: senderUid,
-              lastMessage: text.isEmpty ? '\u{1F4CE} $type' : text,
-              lastMessageTime: timestamp,
-            ),
-          );
-          await ChatDao().incrementUnread(chatId);
+
+          if (!isGroupMsg) {
+            await ChatDao().updatePreviewPreservingUnread(
+              ChatThread(
+                id: chatId,
+                contactUid: senderUid,
+                lastMessage: text.isEmpty ? '\u{1F4CE} $type' : text,
+                lastMessageTime: timestamp,
+              ),
+            );
+            await ChatDao().incrementUnread(chatId);
+          }
           // Ack so the relay deletes the queued copy.
           channel.sink.add(
             jsonEncode({
@@ -355,4 +457,152 @@ Future<String?> _fetchQueuedMessage(RemoteMessage message) async {
     '[AirChat][bg] fetch result: ${result != null ? 'got text' : 'timeout'}',
   );
   return result;
+}
+
+/// Fetches a group message from the relay's group inbox.
+/// The relay stores group packets in `grp:<groupId>:<packetId>` and flushes
+/// them all when any member connects. This function connects, receives the
+/// flushed group_packet messages, decrypts with the local groupKey, persists,
+/// and returns the notification preview text.
+Future<String?> _fetchGroupMessage(RemoteMessage message) async {
+  final data = message.data;
+  final groupId = data['groupId'] as String?;
+  final senderName = data['senderName'] as String? ?? '';
+
+  if (groupId == null || groupId.isEmpty) return null;
+
+  final myUid = await KeyStore.getUid();
+  if (myUid == null || myUid.isEmpty) return null;
+
+  await AppDatabase.instance;
+
+  // Look up the local group and its symmetric key.
+  final localGroup = await GroupDao().getGroupById(groupId);
+  if (localGroup == null) return null; // unknown group
+  final groupKey = localGroup.groupKey;
+  if (groupKey == null || groupKey.isEmpty) return null;
+
+  final engine = SodiumEngine();
+  final completer = Completer<String?>();
+  Timer(const Duration(seconds: 15), () {
+    if (!completer.isCompleted) completer.complete(null);
+  });
+
+  debugPrint('[AirChat][bg] group fetch: WS connect as $myUid for group $groupId');
+  final channel = WebSocketChannel.connect(
+    Uri.parse(
+      'wss://airchat-relay.malandkar-sarvesh1.workers.dev/tunnel?uid=$myUid',
+    ),
+  );
+  channel.ready
+      .then((_) => debugPrint('[AirChat][bg] group WS READY'))
+      .catchError((e) => debugPrint('[AirChat][bg] group WS READY FAILED: $e'));
+
+  late final StreamSubscription<dynamic> sub;
+  sub = channel.stream.listen(
+    (raw) {
+      final rawStr = raw is String ? raw : utf8.decode(raw as List<int>);
+      try {
+        final msg = jsonDecode(rawStr) as Map<String, dynamic>;
+        if (msg['type'] != 'group_packet') return;
+        if (msg['groupId'] != groupId) return; // wrong group
+
+        final senderUid = msg['senderUid'] as String? ?? '';
+        final packetId = msg['packetId'] as String? ?? '';
+        final encodedPayload = msg['payload'] as String? ?? '';
+        final msgSenderName = msg['senderName'] as String? ?? '';
+        final timestamp =
+            (msg['timestamp'] as int?) ?? DateTime.now().millisecondsSinceEpoch;
+
+        if (encodedPayload.isEmpty) return;
+
+        Future(() async {
+          try {
+            final cryptoPayload = CryptoPayload.decode(encodedPayload);
+            final decrypted = await engine.decryptGroupMessage(
+              payload: cryptoPayload,
+              groupKeyBase64: groupKey,
+            );
+            final decoded = jsonDecode(decrypted);
+            final text = (decoded['text'] as String?) ?? '';
+            final type = (decoded['type'] as String?) ?? 'text';
+
+            // Resolve sender name: prefer payload > relay > contact > fallback.
+            String resolvedName =
+                decoded['senderName'] as String? ?? msgSenderName;
+            if (resolvedName.isEmpty) {
+              try {
+                final contact =
+                    await ContactDao().getContactByUid(senderUid);
+                if (contact != null && contact.username.isNotEmpty) {
+                  resolvedName = contact.username;
+                }
+              } catch (_) {}
+            }
+            if (resolvedName.isEmpty) {
+              resolvedName = senderUid.length > 8
+                  ? senderUid.substring(senderUid.length - 8)
+                  : senderUid;
+            }
+
+            // Persist as a group message.
+            await MessageDao().insertMessage(
+              ChatMessage(
+                id: packetId.isNotEmpty ? packetId : 'grp_bg_$timestamp',
+                chatId: groupId,
+                senderUid: senderUid,
+                recipientUid: myUid,
+                text: text,
+                type: type,
+                timestamp: timestamp,
+                isMe: false,
+                status: 'delivered',
+                groupId: groupId,
+                groupSenderName: resolvedName,
+                replyToId: (decoded['replyTo']?['id'] as String?),
+                replyText: (decoded['replyTo']?['text'] as String?) ?? '',
+                replyType:
+                    (decoded['replyTo']?['type'] as String?) ?? 'text',
+                replyIsMe: decoded['replyTo']?['isMe'] as bool?,
+              ),
+            );
+
+            // ACK the group packet.
+            channel.sink.add(jsonEncode({
+              'action': 'ack_group',
+              'packetId': packetId,
+              'groupId': groupId,
+            }));
+
+            if (!completer.isCompleted) {
+              completer.complete('$resolvedName: ${text.isEmpty ? '📎 $type' : text}');
+            }
+          } catch (e) {
+            debugPrint('[AirChat][bg] group decrypt/persist failed: $e');
+          }
+        }).catchError((e) {
+          debugPrint('[AirChat][bg] group message processing failed: $e');
+        });
+      } catch (e) {
+        debugPrint('[AirChat][bg] group ws msg failed: $e');
+      }
+    },
+    onError: (e) {
+      if (!completer.isCompleted) completer.complete(null);
+    },
+    onDone: () {
+      if (!completer.isCompleted) completer.complete(null);
+    },
+  );
+
+  final result = await completer.future;
+  await sub.cancel();
+  try {
+    await channel.sink.close();
+  } catch (_) {}
+  debugPrint(
+    '[AirChat][bg] group fetch result: ${result != null ? 'got text' : 'timeout'}',
+  );
+  // Fallback: show sender name even if decryption failed.
+  return result ?? (senderName.isNotEmpty ? '$senderName sent a message' : null);
 }

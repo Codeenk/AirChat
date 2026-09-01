@@ -109,6 +109,8 @@ class MessageRouter {
       final type = msg['type'];
       if (type == 'direct_message') {
         _handleDirectMessage(msg);
+      } else if (type == 'group_packet') {
+        _handleGroupPacket(msg);
       } else if (type == 'packet_status') {
         final packetId = msg['packetId'] as String?;
         final status = msg['status'] as String?;
@@ -193,17 +195,23 @@ class MessageRouter {
         final gname = groupName ?? decoded['groupName'] as String? ?? 'Group';
         final memberUids =
             (decoded['memberUids'] as List<dynamic>?)?.cast<String>() ?? [];
+        final receivedGroupKey = decoded['groupKey'] as String?;
         if (gid.isNotEmpty) {
           if (messageType == 'group_kick' &&
               (decoded['kickedUid'] as String? ?? '') == uid) {
             await GroupDao().deleteGroup(gid);
           } else {
+            // If we already have this group locally, preserve the existing groupKey
+            // unless the incoming payload carries a new one (key rotation).
+            final existing = await GroupDao().getGroupById(gid);
+            final effectiveKey = receivedGroupKey ?? existing?.groupKey;
             await GroupDao().insertGroup(
               Group(
                 id: gid,
                 name: gname,
                 memberUids: memberUids.isEmpty ? [uid, senderUid] : memberUids,
                 createdAt: timestamp,
+                groupKey: effectiveKey,
               ),
             );
           }
@@ -299,6 +307,90 @@ class MessageRouter {
 
       // Background directory resolution — never blocks message delivery.
       _resolveContactInBackground(senderUid);
+    } catch (e) {
+      // Decryption failed or message already stored
+    }
+  }
+
+  /// Handles a group_packet pushed by the relay — encrypted with the shared
+  /// groupKey, addressed to the group inbox (not to an individual user).
+  Future<void> _handleGroupPacket(Map<String, dynamic> msg) async {
+    final senderUid = msg['senderUid'] as String? ?? '';
+    final packetId = msg['packetId'] as String? ?? '';
+    final encodedPayload = msg['payload'] as String? ?? '';
+    final groupId = msg['groupId'] as String? ?? '';
+    final senderNameFromRelay = msg['senderName'] as String? ?? '';
+    final timestamp = msg['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch;
+
+    if (groupId.isEmpty || encodedPayload.isEmpty) return;
+
+    // Look up the local group and its symmetric groupKey.
+    final localGroup = await GroupDao().getGroupById(groupId);
+    if (localGroup == null) return; // group not known locally — ignore
+    if (!localGroup.memberUids.contains(senderUid)) return; // sender was removed
+    final groupKey = localGroup.groupKey;
+    if (groupKey == null || groupKey.isEmpty) return; // no key available
+
+    try {
+      final cryptoPayload = CryptoPayload.decode(encodedPayload);
+      final decrypted = await engine.decryptGroupMessage(
+        payload: cryptoPayload,
+        groupKeyBase64: groupKey,
+      );
+
+      final decoded = jsonDecode(decrypted) as Map<String, dynamic>;
+      final text = decoded['text'] ?? '';
+      final messageType = decoded['type'] ?? 'text';
+      final mediaKey = decoded['mediaKey'];
+      final secretKeyHex = decoded['secretKeyHex'];
+      final nonceHex = decoded['nonceHex'];
+      final replyTo = (decoded['replyTo'] as Map<String, dynamic>?) ?? const {};
+
+      // Resolve sender name: prefer the name in the payload, then relay, then contact.
+      String contactName = decoded['senderName'] as String? ?? senderNameFromRelay;
+      if (contactName.isEmpty) {
+        final existing = await contactDao.getContactByUid(senderUid);
+        if (existing != null && !_isFallbackName(existing.username)) {
+          contactName = existing.username;
+        } else {
+          contactName = _fallbackName(senderUid);
+        }
+      }
+
+      final message = ChatMessage(
+        id: packetId,
+        chatId: groupId,
+        senderUid: senderUid,
+        recipientUid: uid,
+        text: text,
+        mediaKey: mediaKey,
+        secretKeyHex: secretKeyHex,
+        nonceHex: nonceHex,
+        type: messageType,
+        timestamp: timestamp,
+        isMe: false,
+        status: 'delivered',
+        replyToId: replyTo['id'] as String?,
+        replyText: (replyTo['text'] as String?) ?? '',
+        replyType: (replyTo['type'] as String?) ?? 'text',
+        replyIsMe: replyTo['isMe'] as bool?,
+        groupId: groupId,
+        groupSenderName: contactName,
+      );
+
+      await messageDao.insertMessage(message);
+      bus.fire(RefreshEvent(type: 'messages', chatId: groupId));
+
+      if (!NotificationService.isAppForeground) {
+        await NotificationService.instance.showMessageNotification(
+          title: '${localGroup.name} • $contactName',
+          body: text.isEmpty ? '📎 $messageType' : text,
+          senderUid: groupId,
+        );
+      }
+
+      // ACK the group packet so the relay deletes the cached copy.
+      client.ackGroupPacket(packetId: packetId, groupId: groupId);
     } catch (e) {
       // Decryption failed or message already stored
     }

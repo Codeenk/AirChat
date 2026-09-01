@@ -21,3 +21,17 @@ CREATE INDEX IF NOT EXISTS idx_users_signing_key ON users(signing_public_key);
 ALTER TABLE users ADD COLUMN signing_public_key TEXT NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN signing_signature TEXT NOT NULL DEFAULT '';
 */
+
+-- Group memberships: maps groupId to member UIDs for group inbox routing.
+-- The relay uses this to know which FCM tokens to wake for group messages.
+-- Group key is NOT stored here — only the client knows it (E2EE).
+CREATE TABLE IF NOT EXISTS group_memberships (
+    group_id TEXT NOT NULL,
+    member_uid TEXT NOT NULL,
+    group_name TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (group_id, member_uid)
+);
+
+CREATE INDEX IF NOT EXISTS idx_group_memberships_member ON group_memberships(member_uid);
+CREATE INDEX IF NOT EXISTS idx_group_memberships_group ON group_memberships(group_id);

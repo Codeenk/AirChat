@@ -5,12 +5,14 @@ class Group {
   final String name;
   final List<String> memberUids;
   final int createdAt;
+  final String? groupKey; // base64-encoded symmetric ChaCha20-Poly1305 key
 
   Group({
     required this.id,
     required this.name,
     required this.memberUids,
     required this.createdAt,
+    this.groupKey,
   });
 
   Map<String, dynamic> toMap() => {
@@ -18,6 +20,7 @@ class Group {
     'name': name,
     'member_uids': jsonEncode(memberUids),
     'created_at': createdAt,
+    'group_key': groupKey,
   };
 
   factory Group.fromMap(Map<String, dynamic> map) => Group(
@@ -25,6 +28,7 @@ class Group {
     name: map['name'] as String,
     memberUids: _decodeUids(map['member_uids']),
     createdAt: map['created_at'] as int? ?? 0,
+    groupKey: map['group_key'] as String?,
   );
 
   static List<String> _decodeUids(dynamic v) {
@@ -40,10 +44,11 @@ class Group {
     return [];
   }
 
-  Group copyWith({String? name, List<String>? memberUids}) => Group(
+  Group copyWith({String? name, List<String>? memberUids, String? groupKey}) => Group(
     id: id,
     name: name ?? this.name,
     memberUids: memberUids ?? this.memberUids,
     createdAt: createdAt,
+    groupKey: groupKey ?? this.groupKey,
   );
 }

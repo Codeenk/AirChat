@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
@@ -130,6 +130,10 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
     }
     final packetId = const Uuid().v4();
     final ts = DateTime.now().millisecondsSinceEpoch;
+
+    // Resolve sender display name for the notification.
+    final senderName = await _resolveMyDisplayName(myUid);
+
     final msg = ChatMessage(
       id: packetId,
       chatId: group.id,
@@ -155,6 +159,76 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
     ref
         .read(refreshBusProvider)
         .fire(RefreshEvent(type: 'messages', chatId: group.id));
+
+    // ─── GROUP IDENTITY: encrypt once with groupKey, send ONE packet ───
+    final groupKey = fresh.groupKey;
+    if (groupKey == null || groupKey.isEmpty) {
+      // Fallback: no groupKey yet (stale local record) — use legacy N-send.
+      await _legacyFanOut(
+        text: text, type: type,
+        mediaKey: mediaKey, secretKeyHex: secretKeyHex, nonceHex: nonceHex,
+        group: fresh, myUid: myUid, packetId: packetId,
+      );
+      return;
+    }
+
+    final engine = ref.read(sodiumEngineProvider);
+
+    // Build the plaintext payload that all members will see after decryption.
+    final payload = jsonEncode({
+      'text': text,
+      'type': type,
+      if (mediaKey != null) 'mediaKey': mediaKey,
+      if (secretKeyHex != null) 'secretKeyHex': secretKeyHex,
+      if (nonceHex != null) 'nonceHex': nonceHex,
+      'groupId': group.id,
+      'groupName': group.name,
+      'senderUid': myUid,
+      'senderName': senderName,
+      if (_replyTo != null)
+        'replyTo': {
+          'id': _replyTo!.id,
+          'text': _replyTo!.text,
+          'type': _replyTo!.type,
+          'isMe': _replyTo!.isMe,
+        },
+    });
+
+    try {
+      final enc = await engine.encryptGroupMessage(
+        plainText: payload,
+        groupKeyBase64: groupKey,
+      );
+      ref.read(websocketClientProvider(myUid)).sendGroupPacket(
+        groupId: group.id,
+        groupName: group.name,
+        encryptedPayload: enc.encode(),
+        packetId: packetId,
+        senderName: senderName,
+      );
+    } catch (e) {
+      debugPrint('[AirChat] group send failed: $e');
+      // Fallback to legacy N-send if symmetric encryption fails.
+      await _legacyFanOut(
+        text: text, type: type,
+        mediaKey: mediaKey, secretKeyHex: secretKeyHex, nonceHex: nonceHex,
+        group: fresh, myUid: myUid, packetId: packetId,
+      );
+    }
+  }
+
+  /// Legacy fallback: encrypt individually for each member via X25519.
+  /// Used when groupKey is unavailable (e.g. pre-migration groups).
+  Future<void> _legacyFanOut({
+    required String text,
+    required String type,
+    String? mediaKey,
+    String? secretKeyHex,
+    String? nonceHex,
+    required Group group,
+    required String myUid,
+    required String packetId,
+  }) async {
     final engine = ref.read(sodiumEngineProvider);
     final kp = await KeyStore.getKeyPair();
     if (kp == null) return;
@@ -173,6 +247,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
           if (nonceHex != null) 'nonceHex': nonceHex,
           'groupId': group.id,
           'groupName': group.name,
+          'senderUid': myUid,
           if (_replyTo != null)
             'replyTo': {
               'id': _replyTo!.id,
@@ -195,6 +270,14 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
             );
       } catch (_) {}
     }
+  }
+
+  Future<String> _resolveMyDisplayName(String uid) async {
+    try {
+      final contact = await ContactDao().getContactByUid(uid);
+      if (contact != null && contact.username.isNotEmpty) return contact.username;
+    } catch (_) {}
+    return 'You';
   }
 
   void _sendMessage() {

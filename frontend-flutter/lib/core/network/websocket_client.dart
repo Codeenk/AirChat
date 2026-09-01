@@ -165,6 +165,42 @@ class WebSocketTunnelClient {
     }
   }
 
+  /// Sends a group packet — one encrypted payload stored once in the group
+  /// inbox, woken to all members by the relay.
+  void sendGroupPacket({
+    required String groupId,
+    required String groupName,
+    required String encryptedPayload,
+    required String packetId,
+    required String senderName,
+  }) {
+    final packet = {
+      'action': 'send_group_packet',
+      'groupId': groupId,
+      'groupName': groupName,
+      'encryptedPayload': encryptedPayload,
+      'packetId': packetId,
+      'senderName': senderName,
+    };
+
+    if (_state == TunnelState.connected) {
+      _channel?.sink.add(jsonEncode(packet));
+    } else {
+      _enqueue(packet);
+      connect();
+    }
+  }
+
+  /// Acks a group packet — tells the relay to delete the cached copy.
+  void ackGroupPacket({required String packetId, required String groupId}) {
+    if (_state != TunnelState.connected) return;
+    _channel?.sink.add(jsonEncode({
+      'action': 'ack_group',
+      'packetId': packetId,
+      'groupId': groupId,
+    }));
+  }
+
   void sendAck({required String packetId, required String senderUid}) {
     if (_state != TunnelState.connected) return; // ACKs are best-effort
     _channel?.sink.add(
