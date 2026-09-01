@@ -479,12 +479,19 @@ class _ChatBubbleState extends State<ChatBubble> {
               padding: const EdgeInsets.only(bottom: 3),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text(
-                  widget.groupSenderName!,
-                  style: const TextStyle(
-                    color: AirColors.accent,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxWidth: MediaQuery.of(context).size.width * 0.78 - 28,
+                  ),
+                  child: Text(
+                    widget.groupSenderName!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AirColors.accent,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
               ),

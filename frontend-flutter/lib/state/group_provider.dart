@@ -9,13 +9,16 @@ import '../core/database/daos/contact_dao.dart';
 import '../core/database/daos/group_dao.dart';
 import '../models/group.dart';
 import 'connection_provider.dart';
+import 'refresh_bus.dart';
 
 final groupDaoProvider = Provider((_) => GroupDao());
 
 final groupsProvider = StreamProvider<List<Group>>((ref) async* {
   final dao = ref.watch(groupDaoProvider);
   yield await dao.getAllGroups();
-  // Refresh is manual for now — invalidation on CUD.
+  await for (final _ in ref.watch(refreshBusProvider).stream) {
+    yield await dao.getAllGroups();
+  }
 });
 
 class GroupActions {
