@@ -12,6 +12,7 @@ import '../../core/theme/colors.dart';
 import '../../core/update/update_checker.dart';
 import '../../models/contact.dart';
 import '../../core/database/daos/group_dao.dart';
+import '../../models/chat_thread.dart';
 import '../../models/group.dart';
 import '../../state/chat_provider.dart';
 import '../../state/group_provider.dart';
