@@ -45,6 +45,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
   final Map<String, GlobalKey> _messageKeys = {};
   Timer? _highlightTimer;
   bool _showFab = false;
+  bool _initialDone = false;
   bool _isMediaBusy = false;
 
   @override
@@ -64,7 +65,6 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
     await GroupDao().resetUnread(widget.group.id);
   }
 
-  bool _initialDone = false;
   void _onScroll() {
     if (!_scrollController.hasClients || _myUid == null) return;
     final nearBottom =
@@ -82,27 +82,6 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
         }
       });
     }
-  }
-
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scrollController.hasClients) return;
-      if (!_initialDone) {
-        _initialDone = true;
-        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (_scrollController.hasClients) {
-            _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-          }
-        });
-      } else {
-        final nearBottom = _scrollController.position.maxScrollExtent - _scrollController.position.pixels < 120;
-        if (nearBottom) {
-          _scrollController.animateTo(_scrollController.position.maxScrollExtent,
-              duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
-        }
-      }
-    });
   }
 
   String _dateLabel(int ms) {
@@ -325,7 +304,31 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
     _scrollToBottom();
   }
 
-  Future<void> _sendEncryptedMedia{
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      if (!_initialDone) {
+        _initialDone = true;
+        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scrollController.hasClients) {
+            _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+          }
+        });
+      } else {
+        final nearBottom = _scrollController.position.maxScrollExtent - _scrollController.position.pixels < 120;
+        if (nearBottom) {
+          _scrollController.animateTo(
+            _scrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOut,
+          );
+        }
+      }
+    });
+  }
+
+  Future<void> _sendEncryptedMedia({
     required Uint8List bytes,
     required String fileName,
     required String messageType,
