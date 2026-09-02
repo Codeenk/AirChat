@@ -264,7 +264,9 @@ class MessageRouter {
       await messageDao.insertMessage(message);
 
       if (isGroup) {
-        // Group messages: home list pulls from groups+messages; just notify.
+        if (MessageRouter.openChatId != chatId) {
+          await GroupDao().incrementUnread(chatId);
+        }
         bus.fire(RefreshEvent(type: 'messages', chatId: chatId));
         if (!NotificationService.isAppForeground) {
           final gname = groupName ?? 'Group';

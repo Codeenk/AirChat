@@ -89,7 +89,14 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     }
     if (_scrollController.position.pixels < 200 && _myUid != null) {
       final chatId = buildChatId(_myUid!, widget.contactUid);
-      ref.read(activeChatMessagesProvider(chatId).notifier).loadMore();
+      final beforeMax = _scrollController.position.maxScrollExtent;
+      final beforePixels = _scrollController.position.pixels;
+      ref.read(activeChatMessagesProvider(chatId).notifier).loadMore().then((_) {
+        if (_scrollController.hasClients) {
+          final afterMax = _scrollController.position.maxScrollExtent;
+          _scrollController.jumpTo(afterMax - beforeMax + beforePixels);
+        }
+      });
     }
     _evictStaleKeys();
   }
@@ -260,14 +267,32 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     _scrollToBottom();
   }
 
+  bool _initialDone = false;
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeOut,
-        );
+      if (!_scrollController.hasClients) return;
+      if (!_initialDone) {
+        _initialDone = true;
+        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+        // One more frame to ensure layout settled, then animate if needed.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scrollController.hasClients) {
+            _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+          }
+        });
+      } else {
+        // Only auto-scroll if already near bottom (within 120px) to avoid
+        // yanking the user away from history they are reading.
+        final nearBottom = _scrollController.position.maxScrollExtent -
+                _scrollController.position.pixels <
+            120;
+        if (nearBottom) {
+          _scrollController.animateTo(
+            _scrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOut,
+          );
+        }
       }
     });
   }

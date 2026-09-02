@@ -435,14 +435,36 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
           fontSize: 16,
         ),
       ),
-      subtitle: Text(
-        '${group.memberUids.length} members',
-        style: const TextStyle(color: AirColors.textSecondary, fontSize: 13),
+      subtitle: Row(
+        children: [
+          Expanded(
+            child: Text(
+              '${group.memberUids.length} members',
+              style: const TextStyle(color: AirColors.textSecondary, fontSize: 13),
+            ),
+          ),
+          if (group.unreadCount > 0)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(color: AirColors.accent, borderRadius: BorderRadius.circular(12)),
+              constraints: const BoxConstraints(minWidth: 22),
+              alignment: Alignment.center,
+              child: Text(
+                group.unreadCount > 99 ? '99+' : '${group.unreadCount}',
+                style: const TextStyle(color: AirColors.background, fontSize: 11, fontWeight: FontWeight.w700),
+              ),
+            ),
+        ],
       ),
-      onTap: () => Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => GroupChatScreen(group: group)),
-      ),
+      onTap: () async {
+        await GroupDao().resetUnread(group.id);
+        if (context.mounted) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => GroupChatScreen(group: group)),
+          );
+        }
+      },
     );
   }
 }

@@ -57,4 +57,14 @@ class GroupDao {
     final db = await AppDatabase.instance;
     await db.delete('groups', where: 'id = ?', whereArgs: [id]);
   }
+
+  Future<void> incrementUnread(String id) async {
+    final db = await AppDatabase.instance;
+    await db.rawUpdate('UPDATE groups SET unread_count = unread_count + 1 WHERE id = ?', [id]);
+  }
+
+  Future<void> resetUnread(String id) async {
+    final db = await AppDatabase.instance;
+    await db.update('groups', {'unread_count': 0}, where: 'id = ?', whereArgs: [id]);
+  }
 }

@@ -61,8 +61,10 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
     final uid = await KeyStore.getUid();
     if (mounted && uid != null) setState(() => _myUid = uid);
     MessageRouter.openChatId = widget.group.id;
+    await GroupDao().resetUnread(widget.group.id);
   }
 
+  bool _initialDone = false;
   void _onScroll() {
     if (!_scrollController.hasClients || _myUid == null) return;
     final nearBottom =
@@ -71,8 +73,36 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
         400;
     if (nearBottom != !_showFab) setState(() => _showFab = !nearBottom);
     if (_scrollController.position.pixels < 200) {
-      ref.read(activeChatMessagesProvider(widget.group.id).notifier).loadMore();
+      final beforeMax = _scrollController.position.maxScrollExtent;
+      final beforePixels = _scrollController.position.pixels;
+      ref.read(activeChatMessagesProvider(widget.group.id).notifier).loadMore().then((_) {
+        if (_scrollController.hasClients) {
+          final afterMax = _scrollController.position.maxScrollExtent;
+          _scrollController.jumpTo(afterMax - beforeMax + beforePixels);
+        }
+      });
     }
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      if (!_initialDone) {
+        _initialDone = true;
+        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scrollController.hasClients) {
+            _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+          }
+        });
+      } else {
+        final nearBottom = _scrollController.position.maxScrollExtent - _scrollController.position.pixels < 120;
+        if (nearBottom) {
+          _scrollController.animateTo(_scrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
+        }
+      }
+    });
   }
 
   String _dateLabel(int ms) {
@@ -295,18 +325,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
     _scrollToBottom();
   }
 
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients)
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeOut,
-        );
-    });
-  }
-
-  Future<void> _sendEncryptedMedia({
+  Future<void> _sendEncryptedMedia{
     required Uint8List bytes,
     required String fileName,
     required String messageType,
