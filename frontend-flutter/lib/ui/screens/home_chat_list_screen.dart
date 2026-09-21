@@ -1,3 +1,5 @@
+import 'dart:ui' show ImageFilter;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -121,6 +123,91 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
     });
   }
 
+  /// Single entry point for creation + identity, anchored to the + button.
+  /// One thumb-reachable action replaces three top-corner icons.
+  void _showNewSheet(BuildContext context) {
+    void go(Widget page) {
+      Navigator.pop(context);
+      Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+    }
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => ClipRRect(
+        borderRadius: const BorderRadius.only(
+          topLeft: Radius.circular(24),
+          topRight: Radius.circular(24),
+        ),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+            decoration: BoxDecoration(
+              color: AirColors.surface.withOpacity(0.88),
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(24),
+                topRight: Radius.circular(24),
+              ),
+              border: Border.all(color: AirColors.border),
+            ),
+          child: SafeArea(
+            top: false,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 36,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  decoration: BoxDecoration(
+                    color: AirColors.border,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.person_add_outlined,
+                      color: AirColors.textPrimary),
+                  title: const Text('New chat',
+                      style: TextStyle(color: AirColors.textPrimary)),
+                  subtitle: const Text('Scan a contact QR',
+                      style:
+                          TextStyle(color: AirColors.textSecondary, fontSize: 12)),
+                  onTap: () => go(const QrScannerScreen()),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.group_add,
+                      color: AirColors.textPrimary),
+                  title: const Text('New group',
+                      style: TextStyle(color: AirColors.textPrimary)),
+                  subtitle: const Text('Chat with several contacts',
+                      style:
+                          TextStyle(color: AirColors.textSecondary, fontSize: 12)),
+                  onTap: () => go(const CreateGroupScreen()),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.qr_code_2,
+                      color: AirColors.textPrimary),
+                  title: const Text('My QR code',
+                      style: TextStyle(color: AirColors.textPrimary)),
+                  onTap: () => go(const QrIdentityScreen()),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.badge_outlined,
+                      color: AirColors.textPrimary),
+                  title: const Text('Display name',
+                      style: TextStyle(color: AirColors.textPrimary)),
+                    onTap: () => go(const UsernameSettingsScreen()),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final asyncThreads = ref.watch(chatThreadsProvider);
@@ -133,39 +220,9 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
         title: const AirChatLogo(fontSize: 20),
         actions: [
           IconButton(
-            icon: const Icon(
-              Icons.badge_outlined,
-              color: AirColors.textPrimary,
-            ),
-            tooltip: "Display name",
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => const UsernameSettingsScreen(),
-                ),
-              );
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.qr_code_2, color: AirColors.textPrimary),
-            tooltip: "My QR Code",
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const QrIdentityScreen()),
-              );
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.group_add, color: AirColors.textPrimary),
-            tooltip: "New group",
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const CreateGroupScreen()),
-              );
-            },
+            icon: const Icon(Icons.add, color: AirColors.textPrimary),
+            tooltip: "New",
+            onPressed: () => _showNewSheet(context),
           ),
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert, color: AirColors.textPrimary),

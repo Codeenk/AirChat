@@ -27,6 +27,7 @@ import '../../state/chat_provider.dart';
 import '../../state/connection_provider.dart';
 import '../widgets/attachment_bottom_sheet.dart';
 import '../widgets/chat_bubble.dart';
+import '../widgets/send_button.dart';
 import '../widgets/voice_note_recorder.dart';
 import 'group_info_screen.dart';
 
@@ -46,6 +47,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
   final Map<String, GlobalKey> _messageKeys = {};
   Timer? _highlightTimer;
   bool _showFab = false;
+  bool _userScrolling = false;
   bool _initialDone = false;
   bool _isMediaBusy = false;
 
@@ -322,6 +324,9 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollController.hasClients) return;
+      // Never fight the finger: if the user is mid-drag, skip this cycle.
+      // The next message (or drag end) will re-pin.
+      if (_userScrolling) return;
       if (!_initialDone) {
         _initialDone = true;
         _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
@@ -634,8 +639,17 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
                       ],
                     ),
                   )
-                : ListView.builder(
-                    controller: _scrollController,
+                : NotificationListener<ScrollNotification>(
+                    onNotification: (n) {
+                      if (n is ScrollStartNotification) {
+                        _userScrolling = true;
+                      } else if (n is ScrollEndNotification) {
+                        _userScrolling = false;
+                      }
+                      return false;
+                    },
+                    child: ListView.builder(
+                      controller: _scrollController,
                     padding: const EdgeInsets.symmetric(
                       horizontal: 8,
                       vertical: 12,
@@ -718,6 +732,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
                       );
                     },
                   ),
+                ),
           ),
           if (_replyTo != null)
             Container(
@@ -829,22 +844,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
                       ? VoiceNoteRecorder(
                           onComplete: (r) => _sendVoiceNote(r.path, r.duration),
                         )
-                      : GestureDetector(
-                          onTap: _sendMessage,
-                          child: Container(
-                            width: 42,
-                            height: 42,
-                            decoration: const BoxDecoration(
-                              color: AirColors.bubbleMe,
-                              shape: BoxShape.circle,
-                            ),
-                            child: const Icon(
-                              Icons.arrow_upward,
-                              color: AirColors.bubbleMeText,
-                              size: 20,
-                            ),
-                          ),
-                        ),
+                      : SendButton(onSend: _sendMessage),
                 ],
               ),
             ),

@@ -1,4 +1,8 @@
+import 'dart:math' show sqrt;
+import 'dart:ui' show ImageFilter;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
@@ -65,11 +69,52 @@ class ChatBubble extends StatefulWidget {
   State<ChatBubble> createState() => _ChatBubbleState();
 }
 
-class _ChatBubbleState extends State<ChatBubble> {
+class _ChatBubbleState extends State<ChatBubble>
+    with SingleTickerProviderStateMixin {
   static const double _swipeThreshold = 64;
   double _dragDx = 0;
   bool _firedHaptic = false;
   bool _expanded = false;
+  AnimationController? _springController;
+
+  bool get _reducedMotion =>
+      MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+
+  /// Critically-damped spring (Apple default: damping 1.0, snappy response).
+  /// Carries release velocity so the return trip continues the finger's
+  /// motion instead of teleporting (no "brick wall" on release).
+  void _springBack({required double velocity}) {
+    _springController?.stop();
+    _springController?.dispose();
+    if (_reducedMotion) {
+      setState(() => _dragDx = 0);
+      return;
+    }
+    final controller = AnimationController.unbounded(vsync: this);
+    _springController = controller;
+    const stiffness = 320.0;
+    final damping = 2 * sqrt(stiffness); // critical damping, mass = 1
+    final sim = SpringSimulation(
+      SpringDescription(mass: 1, stiffness: stiffness, damping: damping),
+      _dragDx,
+      0.0,
+      velocity.clamp(-3000.0, 3000.0),
+    );
+    controller.addListener(() {
+      if (!mounted) return;
+      setState(() => _dragDx = controller.value.clamp(0.0, 200.0));
+    });
+    controller.animateWith(sim).whenCompleteOrCancel(() {
+      if (!mounted) return;
+      setState(() => _dragDx = 0);
+    });
+  }
+
+  @override
+  void dispose() {
+    _springController?.dispose();
+    super.dispose();
+  }
 
   bool get _hasMedia =>
       widget.mediaKey != null &&
@@ -95,8 +140,13 @@ class _ChatBubbleState extends State<ChatBubble> {
 
   void _onDragUpdate(DragUpdateDetails d) {
     if (widget.onSwipeReply == null) return;
+    // 1:1 finger tracking up to the catch point, honest resistance beyond it.
+    _springController?.stop();
+    final raw = _dragDx + d.delta.dx;
     setState(() {
-      _dragDx = (_dragDx + d.delta.dx).clamp(0.0, _swipeThreshold * 1.35);
+      _dragDx = raw <= _swipeThreshold
+          ? raw.clamp(0.0, _swipeThreshold * 1.35)
+          : _swipeThreshold + (raw - _swipeThreshold) * 0.3;
     });
     if (!_firedHaptic && _dragDx >= _swipeThreshold) {
       _firedHaptic = true;
@@ -106,11 +156,13 @@ class _ChatBubbleState extends State<ChatBubble> {
 
   void _onDragEnd(DragEndDetails details) {
     if (widget.onSwipeReply == null) return;
-    final fastFlick = (details.primaryVelocity ?? 0) > 450;
+    final releaseVelocity = details.primaryVelocity ?? 0;
+    final fastFlick = releaseVelocity > 450;
     final shouldReply =
         _dragDx >= _swipeThreshold || (fastFlick && _dragDx > 12);
     if (shouldReply) widget.onSwipeReply!();
-    setState(() => _dragDx = 0);
+    // Spring home carrying the finger's velocity — no teleport.
+    _springBack(velocity: -releaseVelocity);
     _firedHaptic = false;
   }
 
@@ -327,9 +379,18 @@ class _ChatBubbleState extends State<ChatBubble> {
         .format(DateTime.fromMillisecondsSinceEpoch(widget.timestamp));
     showModalBottomSheet(
       context: context,
-      backgroundColor: AirColors.surface,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      builder: (_) => SafeArea(
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black54,
+      builder: (_) => ClipRRect(
+        borderRadius: const BorderRadius.only(
+          topLeft: Radius.circular(16),
+          topRight: Radius.circular(16),
+        ),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+          child: Container(
+            color: AirColors.surface.withOpacity(0.88),
+            child: SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -407,6 +468,9 @@ class _ChatBubbleState extends State<ChatBubble> {
             ),
             const SizedBox(height: 8),
           ],
+        ),
+            ),
+          ),
         ),
       ),
     );
@@ -532,17 +596,27 @@ class _ChatBubbleState extends State<ChatBubble> {
         child: Stack(
           alignment: widget.isMe ? Alignment.centerLeft : Alignment.centerRight,
           children: [
-            // Reply arrow revealed behind the bubble while swiping right.
-            Opacity(
-              opacity: (_dragDx / _swipeThreshold).clamp(0.0, 1.0),
-              child: Transform.scale(
-                scale: 0.7 + 0.3 * (_dragDx / _swipeThreshold).clamp(0.0, 1.0),
-                child: const Icon(
-                  Icons.reply,
-                  size: 22,
-                  color: AirColors.textFaint,
-                ),
-              ),
+            // Reply arrow grows toward the finger as the drag telegraphs
+            // the outcome (hint in the direction of the gesture).
+            Builder(
+              builder: (context) {
+                final progress =
+                    (_dragDx / _swipeThreshold).clamp(0.0, 1.0);
+                return Opacity(
+                  opacity: progress,
+                  child: Transform.translate(
+                    offset: Offset(-(1 - progress) * 16, 0),
+                    child: Transform.scale(
+                      scale: 0.7 + 0.3 * progress,
+                      child: const Icon(
+                        Icons.reply,
+                        size: 22,
+                        color: AirColors.textFaint,
+                      ),
+                    ),
+                  ),
+                );
+              },
             ),
             GestureDetector(
               onTap: isFailed ? widget.onRetryFailed : null,
@@ -553,7 +627,7 @@ class _ChatBubbleState extends State<ChatBubble> {
                 label:
                     '${widget.isMe ? 'You' : widget.peerName}: ${widget.text.isEmpty ? widget.type : widget.text}',
                 child: Transform.translate(
-                  offset: Offset(_dragDx * 0.55, 0),
+                  offset: Offset(_dragDx, 0),
                   child: bubble,
                 ),
               ),
