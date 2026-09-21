@@ -38,7 +38,8 @@ class GroupChatScreen extends ConsumerStatefulWidget {
   ConsumerState<GroupChatScreen> createState() => _GroupChatScreenState();
 }
 
-class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
+class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
+    with WidgetsBindingObserver {
   final _textController = TextEditingController();
   final _scrollController = ScrollController();
   String? _myUid;
@@ -54,11 +55,27 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
   @override
   void initState() {
     super.initState();
-    _textController.addListener(() {
-      if (mounted) setState(() {});
-    });
+    // No text listener setState — mic/send swap uses ValueListenableBuilder.
+    WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(_onScroll);
     _initAsync();
+  }
+
+  @override
+  void didChangeMetrics() {
+    // Keyboard open/close resizes the list: re-pin if user was at bottom.
+    if (!_scrollController.hasClients) return;
+    final max = _scrollController.position.maxScrollExtent;
+    final pixels = _scrollController.position.pixels;
+    if (max - pixels < 200) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scrollController.hasClients) {
+          _scrollController.jumpTo(
+            _scrollController.position.maxScrollExtent,
+          );
+        }
+      });
+    }
   }
 
   Future<void> _initAsync() async {
@@ -505,6 +522,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _highlightTimer?.cancel();
     _scrollController.dispose();
     _textController.dispose();
@@ -840,11 +858,18 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  _textController.text.isEmpty
-                      ? VoiceNoteRecorder(
-                          onComplete: (r) => _sendVoiceNote(r.path, r.duration),
-                        )
-                      : SendButton(onSend: _sendMessage),
+                  ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: _textController,
+                    builder: (context, value, _) {
+                      if (value.text.isEmpty) {
+                        return VoiceNoteRecorder(
+                          onComplete: (r) =>
+                              _sendVoiceNote(r.path, r.duration),
+                        );
+                      }
+                      return SendButton(onSend: _sendMessage);
+                    },
+                  ),
                 ],
               ),
             ),

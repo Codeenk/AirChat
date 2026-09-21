@@ -43,7 +43,8 @@ class ChatRoomScreen extends ConsumerStatefulWidget {
   ConsumerState<ChatRoomScreen> createState() => _ChatRoomScreenState();
 }
 
-class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
+class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
+    with WidgetsBindingObserver {
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   String? _myUid;
@@ -55,23 +56,42 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   @override
   void initState() {
     super.initState();
-    _textController.addListener(_onTextChanged);
+    // NOTE: no text listener calling setState — every keystroke used to
+    // rebuild the whole screen (all bubbles). The mic/send swap below uses
+    // ValueListenableBuilder so only the button rebuilds.
+    WidgetsBinding.instance.addObserver(this);
     _initAsync();
     _scrollController.addListener(_onScroll);
   }
 
-  void _onTextChanged() {
-    if (mounted) setState(() {}); // swap mic <-> send button live
-  }
-
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _highlightTimer?.cancel();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _textController.dispose();
     MessageRouter.openChatId = null;
     super.dispose();
+  }
+
+  @override
+  void didChangeMetrics() {
+    // Keyboard open/close resizes the list: if the user was pinned to the
+    // bottom, re-pin after the resize settles instead of leaving the list
+    // stranded mid-history.
+    if (!_scrollController.hasClients) return;
+    final max = _scrollController.position.maxScrollExtent;
+    final pixels = _scrollController.position.pixels;
+    if (max - pixels < 200) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scrollController.hasClients) {
+          _scrollController.jumpTo(
+            _scrollController.position.maxScrollExtent,
+          );
+        }
+      });
+    }
   }
 
   static const int _maxMessageKeys = 200;
@@ -760,9 +780,14 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
               ),
             ),
             const SizedBox(width: 8),
-            // Mic when the field is empty, send arrow otherwise.
-            _textController.text.isEmpty
-                ? VoiceNoteRecorder(
+            // Mic when the field is empty, send arrow otherwise. Scoped
+            // rebuild: only this button rebuilds per keystroke, never the
+            // message list (keyboard-up jank fix).
+            ValueListenableBuilder<TextEditingValue>(
+              valueListenable: _textController,
+              builder: (context, value, _) {
+                if (value.text.isEmpty) {
+                  return VoiceNoteRecorder(
                     onComplete: (recording) =>
                         _sendVoiceNote(recording.path, recording.duration),
                     onPermissionDenied: () {
@@ -774,8 +799,11 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                         ),
                       );
                     },
-                  )
-                : SendButton(onSend: _sendMessage),
+                  );
+                }
+                return SendButton(onSend: _sendMessage);
+              },
+            ),
           ],
         ),
       ),
