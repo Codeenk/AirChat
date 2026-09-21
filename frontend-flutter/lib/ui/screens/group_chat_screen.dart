@@ -548,6 +548,8 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
       if (next.length > (prev?.length ?? 0)) _scrollToBottom();
     });
     final messages = ref.watch(activeChatMessagesProvider(widget.group.id));
+    // Built once per list build so per-item reply checks stay O(1).
+    final _messageIds = messages.map((m) => m.id).toSet();
     return Scaffold(
       backgroundColor: AirColors.background,
       appBar: AppBar(
@@ -683,7 +685,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
                           );
                       final effectiveReplyText =
                           msg.hasReply &&
-                              !messages.any((m) => m.id == msg.replyToId)
+                              !_messageIds.contains(msg.replyToId)
                           ? 'Message deleted'
                           : msg.replyText;
                       final msgKey = _messageKeys.putIfAbsent(

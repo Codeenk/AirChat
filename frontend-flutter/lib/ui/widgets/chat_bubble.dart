@@ -497,7 +497,9 @@ class _ChatBubbleState extends State<ChatBubble>
     // IntrinsicWidth was removed — it forced double layout per bubble (scroll
     // jank) and, combined with Align(centerRight), stretched short messages
     // like "Hiii" to full width.
-    final bubbleMaxWidth = MediaQuery.of(context).size.width * 0.78;
+    // sizeOf (not .of): ignores keyboard viewInsets changes, so bubbles
+    // don't rebuild on every keyboard animation frame.
+    final bubbleMaxWidth = MediaQuery.sizeOf(context).width * 0.78;
     final bubble = ConstrainedBox(
       constraints: BoxConstraints(maxWidth: bubbleMaxWidth),
       child: Container(
@@ -548,7 +550,7 @@ class _ChatBubbleState extends State<ChatBubble>
               padding: const EdgeInsets.only(bottom: 3),
               child: ConstrainedBox(
                 constraints: BoxConstraints(
-                  maxWidth: MediaQuery.of(context).size.width * 0.78 - 28,
+                  maxWidth: bubbleMaxWidth - 28,
                 ),
                 child: Text(
                   widget.groupSenderName!,

@@ -543,6 +543,8 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
     });
 
     final messages = ref.watch(activeChatMessagesProvider(chatId));
+    // Built once per list build so per-item reply checks stay O(1).
+    final _messageIds = messages.map((m) => m.id).toSet();
 
     return Scaffold(
       backgroundColor: AirColors.background,
@@ -637,9 +639,11 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
                             messages[index - 1].timestamp,
                             msg.timestamp,
                           );
+                      // O(1) lookup: _messageIds is built once per list build
+                      // (was messages.any → O(n²) per rebuild, janked scroll).
                       final effectiveReplyText =
                           msg.hasReply &&
-                              !messages.any((m) => m.id == msg.replyToId)
+                              !_messageIds.contains(msg.replyToId)
                           ? 'Message deleted'
                           : msg.replyText;
                       final msgKey = _messageKeys.putIfAbsent(
