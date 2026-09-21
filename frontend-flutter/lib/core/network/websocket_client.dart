@@ -56,6 +56,8 @@ class WebSocketTunnelClient {
   /// so nothing is lost to the 10s unauthenticated window.
   bool _authed = false;
   bool get isAuthed => _authed;
+  bool _sawAuthChallenge = false;
+  Timer? _legacyRelayTimer;
 
   WebSocketTunnelClient({
     this.baseWsUrl = "wss://airchat-relay.malandkar-sarvesh1.workers.dev",
@@ -98,7 +100,17 @@ class WebSocketTunnelClient {
             _backoffSeconds = 3; // reset backoff on success
             _setState(TunnelState.connected);
             _startPing();
-            _flushOutboundQueue();
+            // Legacy relay compat: old relays never send auth_challenge and
+            // flush on connect. If no challenge arrives in 5s, assume legacy
+            // and release held sends. (New relays challenge immediately.)
+            _legacyRelayTimer?.cancel();
+            _legacyRelayTimer = Timer(const Duration(seconds: 5), () {
+              if (!identical(_channel, channel) || _disposed) return;
+              if (!_sawAuthChallenge && !_authed) {
+                _setAuthed(true);
+              }
+            });
+            if (_authed) _flushOutboundQueue();
           })
           .catchError((_) {
             if (identical(_channel, channel)) _handleDisconnect();
@@ -111,6 +123,8 @@ class WebSocketTunnelClient {
 
             // Auth challenge: sign nonce+uid, then flush anything held.
             if (jsonMap['type'] == 'auth_challenge') {
+              _sawAuthChallenge = true;
+              _legacyRelayTimer?.cancel();
               _handleAuthChallenge(jsonMap['nonce'] as String?);
               return;
             }
@@ -288,6 +302,8 @@ class WebSocketTunnelClient {
   void _handleDisconnect() {
     if (_disposed) return;
     _authed = false;
+    _sawAuthChallenge = false;
+    _legacyRelayTimer?.cancel();
     _setState(TunnelState.disconnected);
     _pingTimer?.cancel();
 
@@ -316,6 +332,7 @@ class WebSocketTunnelClient {
   void dispose() {
     _disposed = true;
     _connectivitySub?.cancel();
+    _legacyRelayTimer?.cancel();
     _pingTimer?.cancel();
     _reconnectTimer?.cancel();
     _channel?.sink.close();
