@@ -116,11 +116,23 @@ class _QrScannerScreenState extends State<QrScannerScreen>
       }
       controller = MobileScannerController(autoStart: false);
       _controller = controller;
+      // Build the MobileScanner widget FIRST so it can attach. v7's start()
+      // throws controllerNotAttached if called before the widget exists —
+      // calling start() first leaves a dead black preview with no error.
+      if (mounted) setState(() {});
+      // Let one frame pass so the widget attaches to the controller.
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      if (_screenDisposed || !mounted || _controller != controller) return;
       _subscription = controller.barcodes.listen(_onDetect);
       try {
         await controller.start();
       } catch (e) {
         debugPrint('[AirChat] scanner start failed: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Scanner failed to start: $e')),
+          );
+        }
       }
       if (_screenDisposed) {
         try {
@@ -169,39 +181,71 @@ class _QrScannerScreenState extends State<QrScannerScreen>
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  bool _addingContact = false;
+
   Future<void> _addContactAndOpenChat(QrContactPayload payload) async {
-    final myUid = await KeyStore.getUid() ?? '';
-    final chatId = buildChatId(myUid, payload.uid);
+    // Never fail silently: every failure path tells the user what happened.
+    if (_addingContact) return;
+    _addingContact = true;
+    try {
+      final myUid = await KeyStore.getUid() ?? '';
+      if (myUid.isEmpty) {
+        _showSnack('Identity not ready yet — reopen the scanner');
+        _isHandled = false;
+        return;
+      }
+      if (payload.uid == myUid) {
+        _showSnack("That's your own code — scan a peer's code");
+        _isHandled = false;
+        return;
+      }
+      final chatId = buildChatId(myUid, payload.uid);
 
-    await ContactDao().insertContact(
-      Contact(
-        uid: payload.uid,
-        username: payload.username,
-        identityPublicKey: payload.identityPublicKey,
-        createdAt: DateTime.now().millisecondsSinceEpoch,
-      ),
-    );
-
-    await ChatDao().insertOrUpdateChat(
-      ChatThread(
-        id: chatId,
-        contactUid: payload.uid,
-        lastMessage: '',
-        lastMessageTime: DateTime.now().millisecondsSinceEpoch,
-      ),
-    );
-
-    if (!mounted) return;
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ChatRoomScreen(
-          contactName: payload.username,
-          contactUid: payload.uid,
-          contactPublicKey: payload.identityPublicKey,
+      await ContactDao().insertContact(
+        Contact(
+          uid: payload.uid,
+          username: payload.username,
+          identityPublicKey: payload.identityPublicKey,
+          createdAt: DateTime.now().millisecondsSinceEpoch,
         ),
-      ),
-    );
+      );
+
+      // Verify the write landed (catches DB/keystore failures on old devices).
+      final saved = await ContactDao().getContactByUid(payload.uid);
+      if (saved == null || saved.identityPublicKey.isEmpty) {
+        _showSnack('Could not save contact — storage unavailable');
+        _isHandled = false;
+        return;
+      }
+
+      await ChatDao().insertOrUpdateChat(
+        ChatThread(
+          id: chatId,
+          contactUid: payload.uid,
+          lastMessage: '',
+          lastMessageTime: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
+
+      if (!mounted) return;
+      HapticFeedback.mediumImpact();
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChatRoomScreen(
+            contactName: payload.username,
+            contactUid: payload.uid,
+            contactPublicKey: payload.identityPublicKey,
+          ),
+        ),
+      );
+    } catch (e) {
+      debugPrint('[AirChat] add contact failed: $e');
+      _showSnack('Could not add contact: $e');
+      _isHandled = false;
+    } finally {
+      _addingContact = false;
+    }
   }
 
   @override
