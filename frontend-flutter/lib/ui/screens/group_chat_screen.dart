@@ -12,6 +12,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/crypto/key_store.dart';
+import '../../core/crypto/signing_engine.dart';
 import '../../core/database/daos/contact_dao.dart';
 import '../../core/database/daos/message_dao.dart';
 import '../../core/device/device_info_helper.dart';
@@ -183,6 +184,19 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
 
     final engine = ref.read(sodiumEngineProvider);
 
+    // Sign the message so receivers can verify it came from a member
+    // (not the relay or an outsider). Missing key = unsigned (compat).
+    String msgSig = '';
+    try {
+      final signingKp = await KeyStore.getSigningKeyPair();
+      if (signingKp != null) {
+        msgSig = await SigningEngine().signHex(
+          '$packetId|$text|${group.id}',
+          signingKp,
+        );
+      }
+    } catch (_) {}
+
     // Build the plaintext payload that all members will see after decryption.
     final payload = jsonEncode({
       'text': text,
@@ -194,6 +208,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
       'groupName': group.name,
       'senderUid': myUid,
       'senderName': senderName,
+      if (msgSig.isNotEmpty) 'sig': msgSig,
       if (_replyTo != null)
         'replyTo': {
           'id': _replyTo!.id,

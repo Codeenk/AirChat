@@ -27,7 +27,7 @@ class AppDatabase {
       return await databaseFactoryFfiWeb.openDatabase(
         '/airchat/airchat_web.db',
         options: OpenDatabaseOptions(
-          version: 6,
+          version: 7,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         ),
@@ -41,7 +41,7 @@ class AppDatabase {
       return await openDatabase(
         path,
         password: masterKey,
-        version: 6,
+        version: 7,
         onCreate: _onCreate,
         onUpgrade: _onUpgrade,
       );
@@ -55,7 +55,7 @@ class AppDatabase {
         return await openDatabase(
           path,
           password: masterKey,
-          version: 6,
+          version: 7,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         );
@@ -204,6 +204,14 @@ class AppDatabase {
       // v6: group unread badges (same pattern as chat_threads).
       try {
         await db.execute('ALTER TABLE groups ADD COLUMN unread_count INTEGER DEFAULT 0');
+      } catch (e) {
+        if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;
+      }
+    }
+    if (oldVersion < 7) {
+      // v7: sender signing keys for message/control verification.
+      try {
+        await db.execute('ALTER TABLE contacts ADD COLUMN signing_public_key TEXT');
       } catch (e) {
         if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;
       }

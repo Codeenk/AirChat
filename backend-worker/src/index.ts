@@ -142,7 +142,7 @@ import { sendSilentWake } from "./utils/fcm";
 
 async function sendTestPush(env: any, fcmToken: string): Promise<boolean> {
   // Reuses the wake sender with a fixed uid so the client can identify it.
-  return sendSilentWake(env, fcmToken, "self_test", "AirChat");
+  return sendSilentWake(env, fcmToken, "self_test");
 }
 
 // Register group membership in D1 — the relay uses this to know which

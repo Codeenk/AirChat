@@ -12,6 +12,7 @@ interface SocketLease {
 }
 
 import { sendSilentWake, sendDeliveryFailedWake, sendGroupWake } from "../utils/fcm";
+import { verifyEd25519Signature } from "../utils/crypto-verify";
 
 const TTL_MS = 24 * 60 * 60 * 1000; // 24h ephemeral cache — the only server storage
 const LEASE_MS = 90 * 1000; // socket lease: ping every 25s refreshes; >90s = dead wire
@@ -54,22 +55,56 @@ export class ConnectionRelay {
 
   private async handleSession(ws: WebSocket, uid: string): Promise<void> {
     ws.accept();
-    // Replace any stale wire for this uid (old socket without close event).
-    const stale = this.sockets.get(uid);
-    if (stale && stale.ws !== ws) {
-      try { stale.ws.close(4000, "replaced"); } catch { /* already dead */ }
-    }
-    this.sockets.set(uid, { ws, lastSeen: Date.now() });
 
-    // Deliver queued ephemeral messages stored persistently in DO storage
-    await this.flushEphemeralQueue(ws, uid);
-
-    // Also flush group inboxes for all groups this user belongs to.
-    await this.flushGroupInboxes(ws, uid);
+    // ─── WS AUTH CHALLENGE ───
+    // The socket must prove ownership of uid by signing nonce+uid with the
+    // Ed25519 signing key registered in D1. Until authed: no flush, no
+    // send, no ack/delete. This kills impersonation (anyone opening
+    // /tunnel?uid=victim) — previously a full queue-drain + delete primitive.
+    const nonceBytes = new Uint8Array(16);
+    crypto.getRandomValues(nonceBytes);
+    const nonce = Array.from(nonceBytes)
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    let authed = false;
+    try {
+      ws.send(JSON.stringify({ type: "auth_challenge", nonce }));
+    } catch { /* socket already dead */ }
+    const authTimer = setTimeout(() => {
+      if (!authed) {
+        try { ws.close(4401, "auth required"); } catch { /* ignore */ }
+      }
+    }, 10000);
 
     ws.addEventListener("message", async (event) => {
       try {
         const data = JSON.parse(event.data as string);
+
+        if (data.action === "auth") {
+          const ok = await this.verifySocketAuth(uid, nonce, data.signature);
+          if (ok) {
+            authed = true;
+            clearTimeout(authTimer);
+            try {
+              ws.send(JSON.stringify({ type: "auth_ok" }));
+            } catch { /* ignore */ }
+            // Replace any stale wire for this uid (old socket without close event).
+            const stale = this.sockets.get(uid);
+            if (stale && stale.ws !== ws) {
+              try { stale.ws.close(4000, "replaced"); } catch { /* already dead */ }
+            }
+            this.sockets.set(uid, { ws, lastSeen: Date.now() });
+            // Authenticated: now safe to flush.
+            await this.flushEphemeralQueue(ws, uid);
+            await this.flushGroupInboxes(ws, uid);
+          } else {
+            try { ws.close(4401, "auth failed"); } catch { /* ignore */ }
+          }
+          return;
+        }
+
+        // Everything below requires an authenticated wire.
+        if (!authed) return;
 
         if (data.action === "ping") {
           // Heartbeat refreshes the wire lease.
@@ -151,8 +186,8 @@ export class ConnectionRelay {
                 timestamp: Date.now(),
               }));
             } else {
-              // Member offline — FCM wake with group context
-              await this.dispatchGroupPushWake(memberUid, uid, groupId, groupName || "", senderName || "");
+              // Member offline — opaque FCM wake (names resolved on-device)
+              await this.dispatchGroupPushWake(memberUid, uid, groupId);
               wokenCount++;
             }
           }
@@ -211,6 +246,31 @@ export class ConnectionRelay {
         this.sockets.delete(uid);
       }
     });
+  }
+
+  /// Verifies Ed25519(nonce + uid) against the signing key in D1.
+  private async verifySocketAuth(
+    uid: string,
+    nonce: string,
+    signature: unknown
+  ): Promise<boolean> {
+    try {
+      if (typeof signature !== "string" || signature.length === 0) return false;
+      const row: { signing_public_key: string | null } | null =
+        await this.env.DB.prepare(
+          "SELECT signing_public_key FROM users WHERE uid = ?"
+        ).bind(uid).first();
+      const pubKey = row?.signing_public_key;
+      if (!pubKey) {
+        console.log(`[relay] auth: no signing key for ${uid}`);
+        return false;
+      }
+      const ok = await verifyEd25519Signature(pubKey, signature, nonce + uid);
+      console.log(`[relay] auth ${ok ? "ok" : "FAILED"} for ${uid}`);
+      return ok;
+    } catch {
+      return false;
+    }
   }
 
   /// A wire is live only if the socket is open AND its lease is fresh.
@@ -412,18 +472,13 @@ export class ConnectionRelay {
     }
   }
 
-  // FCM Silent Data-only Push Wake Notification (containing zero message content)
+  // FCM Silent Data-only Push Wake Notification (opaque: uid only)
   private async dispatchSilentPushWake(recipientUid: string, senderUid: string): Promise<void> {
     try {
-      // Single query: recipient's push token + sender's display name (so the
-      // client can render the notification without a directory round-trip).
-      const row: { fcm_token: string | null; sender_username: string | null } | null =
+      const row: { fcm_token: string | null } | null =
         await this.env.DB.prepare(
-          `SELECT r.fcm_token AS fcm_token, s.username AS sender_username
-           FROM users r
-           LEFT JOIN users s ON s.uid = ?2
-           WHERE r.uid = ?1`
-        ).bind(recipientUid, senderUid).first();
+          "SELECT fcm_token FROM users WHERE uid = ?"
+        ).bind(recipientUid).first();
 
       const fcmToken = row?.fcm_token;
       if (!fcmToken) {
@@ -431,20 +486,18 @@ export class ConnectionRelay {
         return;
       }
 
-      const ok = await sendSilentWake(this.env, fcmToken, senderUid, row?.sender_username ?? undefined);
+      const ok = await sendSilentWake(this.env, fcmToken, senderUid);
       console.log(`[relay] wake sent=${ok} to ${recipientUid}`);
     } catch {
       // Ignore push dispatch errors if FCM is unconfigured
     }
   }
 
-  // FCM push wake for group messages — includes groupId + groupName + senderName
+  // FCM push wake for group messages — opaque groupId only.
   private async dispatchGroupPushWake(
     recipientUid: string,
     senderUid: string,
     groupId: string,
-    groupName: string,
-    senderName: string,
   ): Promise<void> {
     try {
       const row: { fcm_token: string | null } | null = await this.env.DB.prepare(
@@ -457,7 +510,7 @@ export class ConnectionRelay {
         return;
       }
 
-      const ok = await sendGroupWake(this.env, fcmToken, senderUid, senderName, groupId, groupName);
+      const ok = await sendGroupWake(this.env, fcmToken, senderUid, groupId);
       console.log(`[relay] group wake sent=${ok} to ${recipientUid} for group ${groupId}`);
     } catch {
       // Ignore push dispatch errors

@@ -8,6 +8,7 @@ import 'package:uuid/uuid.dart';
 import 'package:http/http.dart' as http;
 
 import '../core/crypto/key_store.dart';
+import '../core/crypto/signing_engine.dart';
 import '../core/database/daos/contact_dao.dart';
 import '../core/database/daos/group_dao.dart';
 import '../core/network/api_client.dart';
@@ -64,6 +65,16 @@ class GroupActions {
     // Fan-out invites: one 1:1 message per member carrying the groupKey.
     final engine = ref.read(sodiumEngineProvider);
     final myKeyPair = await KeyStore.getKeyPair();
+    final signingKeyPair = await KeyStore.getSigningKeyPair();
+    String inviteSig = '';
+    if (signingKeyPair != null) {
+      try {
+        inviteSig = await SigningEngine().signHex(
+          'group_invite|${group.id}|${allMembers.join(',')}',
+          signingKeyPair,
+        );
+      } catch (_) {}
+    }
     if (myKeyPair != null) {
       for (final uid in memberUids) {
         try {
@@ -78,6 +89,7 @@ class GroupActions {
             'groupName': group.name,
             'memberUids': allMembers,
             'groupKey': groupKey, // encrypted per-member via X25519
+            if (inviteSig.isNotEmpty) 'sig': inviteSig,
           };
           final enc = await engine.encryptMessage(
             plainText: jsonEncode(payload),
@@ -97,11 +109,17 @@ class GroupActions {
     return group;
   }
 
+  /// Idempotency tokens so N survivors observing one kick don't each rotate.
+  final Set<String> _rekeyedTokens = {};
+
   Future<void> addMembers(String groupId, List<String> newUids) async {
     final dao = ref.read(groupDaoProvider);
     final group = await dao.getGroupById(groupId);
     if (group == null) return;
     final updated = {...group.memberUids, ...newUids}.toList();
+    // Re-key on membership change: the new key goes only to the new roster.
+    final newKey = _generateGroupKey();
+    await dao.updateGroupKey(groupId, newKey);
     await dao.updateMembers(groupId, updated);
 
     // Re-register with the server so new members get group wakes.
@@ -173,8 +191,20 @@ class GroupActions {
     final myUid = await KeyStore.getUid() ?? '';
     final engine = ref.read(sodiumEngineProvider);
     final myKeyPair = await KeyStore.getKeyPair();
+    final signingKeyPair = await KeyStore.getSigningKeyPair();
     if (myKeyPair == null) return;
     final group = await ref.read(groupDaoProvider).getGroupById(groupId);
+    // Sign roster changes so receivers can verify the control came from a
+    // member (not the relay or an outsider).
+    String controlSig = '';
+    if (signingKeyPair != null) {
+      try {
+        controlSig = await SigningEngine().signHex(
+          '$type|$groupId|${memberUids.join(',')}',
+          signingKeyPair,
+        );
+      } catch (_) {}
+    }
     for (final uid in memberUids) {
       if (uid == myUid) continue;
       try {
@@ -190,6 +220,7 @@ class GroupActions {
           'memberUids': memberUids,
           if (group?.groupKey != null) 'groupKey': group!.groupKey,
           if (kickedUid != null) 'kickedUid': kickedUid,
+          if (controlSig.isNotEmpty) 'sig': controlSig,
         };
         final enc = await engine.encryptMessage(
           plainText: jsonEncode(payload),
@@ -206,6 +237,57 @@ class GroupActions {
       } catch (_) {}
     }
   }
+
+  /// Rotates the group key and distributes it to the current roster.
+  /// Called when a kick/leave is observed (via the 'rekey' bus event).
+  /// Old key is deleted locally. [token] dedupes concurrent triggers for
+  /// the same membership change across N survivors.
+  Future<void> rotateGroupKey(String groupId, {String? token}) async {
+    if (token != null) {
+      if (!_rekeyedTokens.add(token)) return;
+      if (_rekeyedTokens.length > 200) _rekeyedTokens.clear();
+    }
+    final dao = ref.read(groupDaoProvider);
+    final group = await dao.getGroupById(groupId);
+    if (group == null) return;
+    final newKey = _generateGroupKey();
+    await dao.updateGroupKey(groupId, newKey);
+    ref.invalidate(groupsProvider);
+    await _broadcastGroupControl(
+      groupId: groupId,
+      type: 'group_add',
+      memberUids: group.memberUids,
+    );
+  }
 }
 
 final groupActionsProvider = Provider((ref) => GroupActions(ref));
+
+/// Watches for 'rekey' bus events (kick observed) and rotates the group key.
+/// Deterministic rotator election: the surviving member with the
+/// lexicographically smallest uid rotates. All survivors compute the same
+/// rule, so exactly one rotation happens — no key divergence.
+/// Lives for the app lifetime via keepAlive — rotation must happen even
+/// with no chat screen open.
+final groupRekeyWatcherProvider = Provider((ref) {
+  final sub = ref.watch(refreshBusProvider).stream.listen((event) async {
+    if (event.type == 'rekey' && event.chatId != null) {
+      final chatId = event.chatId!;
+      try {
+        final myUid = await KeyStore.getUid() ?? '';
+        final group =
+            await ref.read(groupDaoProvider).getGroupById(chatId);
+        if (group == null || myUid.isEmpty) return;
+        if (!group.memberUids.contains(myUid)) return;
+        final sorted = [...group.memberUids]..sort();
+        if (sorted.first != myUid) return; // not the elected rotator
+        await ref
+            .read(groupActionsProvider)
+            .rotateGroupKey(chatId, token: 'kick:$chatId');
+      } catch (_) {}
+    }
+  });
+  ref.onDispose(() => sub.cancel());
+  ref.keepAlive();
+  return sub;
+});

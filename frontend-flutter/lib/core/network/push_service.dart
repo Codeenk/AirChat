@@ -12,6 +12,7 @@ import 'notification_service.dart';
 import '../crash/crash_reporter.dart';
 import '../network/api_client.dart';
 import '../crypto/key_store.dart';
+import '../crypto/relay_auth.dart';
 import '../crypto/sodium_engine.dart';
 import '../database/app_database.dart';
 import '../database/daos/chat_dao.dart';
@@ -120,28 +121,29 @@ Future<void> _showWakeNotification(
   final data = message.data;
   final wakeType = data['type'] as String?;
 
-  // Group wake: show "GroupName • SenderName"
+  // Group wake: resolve group + sender names locally (opaque push).
   if (wakeType == 'group_wake') {
-    final groupName = (data['groupName'] as String?)?.trim() ?? 'Group';
-    final senderName = (data['senderName'] as String?)?.trim();
-    final name = (senderName != null && senderName.isNotEmpty)
-        ? senderName
-        : await _resolveSenderName(data['senderUid'] as String?);
+    final groupId = data['groupId'] as String?;
+    String groupName = 'Group';
+    try {
+      if (groupId != null && groupId.isNotEmpty) {
+        final g = await GroupDao().getGroupById(groupId);
+        if (g != null && g.name.isNotEmpty) groupName = g.name;
+      }
+    } catch (_) {}
+    final name = await _resolveSenderName(data['senderUid'] as String?);
     await NotificationService.instance.showMessageNotification(
       title: titleOverride ?? '$groupName • $name',
       body: bodyOverride ?? 'New message in $groupName',
-      senderUid: data['groupId'] as String?,
+      senderUid: groupId,
     );
     return;
   }
 
-  // Regular wake
+  // Regular wake — sender name always resolved on-device.
   if (wakeType != 'wake') return;
 
-  final serverName = (data['senderName'] as String?)?.trim();
-  final name = (serverName != null && serverName.isNotEmpty)
-      ? serverName
-      : await _resolveSenderName(data['senderUid'] as String?);
+  final name = await _resolveSenderName(data['senderUid'] as String?);
   await NotificationService.instance.showMessageNotification(
     title: titleOverride ?? name,
     body: bodyOverride ?? 'You have a new message',
@@ -346,6 +348,17 @@ Future<String?> _fetchQueuedMessage(RemoteMessage message) async {
       final rawStr = raw is String ? raw : utf8.decode(raw as List<int>);
       try {
         final msg = jsonDecode(rawStr) as Map<String, dynamic>;
+        // Relay auth: sign the challenge so the inbox actually flushes.
+        if (msg['type'] == 'auth_challenge') {
+          Future(() async {
+            final sig =
+                await signRelayChallenge(myUid, msg['nonce'] as String? ?? '');
+            if (sig != null && sig.isNotEmpty) {
+              channel.sink.add(jsonEncode({'action': 'auth', 'signature': sig}));
+            }
+          });
+          return;
+        }
         if (msg['type'] != 'direct_message') return;
         if (msg['senderUid'] != senderUid) return;
 
@@ -504,6 +517,17 @@ Future<String?> _fetchGroupMessage(RemoteMessage message) async {
       final rawStr = raw is String ? raw : utf8.decode(raw as List<int>);
       try {
         final msg = jsonDecode(rawStr) as Map<String, dynamic>;
+        // Relay auth: sign the challenge so the inbox actually flushes.
+        if (msg['type'] == 'auth_challenge') {
+          Future(() async {
+            final sig =
+                await signRelayChallenge(myUid, msg['nonce'] as String? ?? '');
+            if (sig != null && sig.isNotEmpty) {
+              channel.sink.add(jsonEncode({'action': 'auth', 'signature': sig}));
+            }
+          });
+          return;
+        }
         if (msg['type'] != 'group_packet') return;
         if (msg['groupId'] != groupId) return; // wrong group
 

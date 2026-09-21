@@ -96,15 +96,14 @@ export async function getFcmAccessToken(serviceAccountJson: string): Promise<str
   return data.access_token;
 }
 
-// Sends a silent (data-only) wake-up push. Contains zero message content —
-// only the sender's uid and public display name (directory metadata) so the
-// client can render the notification instantly without any DB/network work
-// in the cold-start background isolate.
+// Sends a silent (data-only) wake-up push. Opaque: only the sender's uid,
+// which the client needs to fetch the right inbox. The display name is
+// resolved locally on-device (contacts DB) so Google never sees the
+// social graph.
 export async function sendSilentWake(
   env: { FCM_SERVICE_ACCOUNT_JSON?: string; FCM_PROJECT_ID?: string },
   fcmToken: string,
   senderUid: string,
-  senderName?: string,
 ): Promise<boolean> {
   if (!env.FCM_SERVICE_ACCOUNT_JSON || !env.FCM_PROJECT_ID) {
     return false; // Push not configured; queued messages still deliver on next app open
@@ -135,7 +134,6 @@ export async function sendSilentWake(
             data: {
               type: "wake",
               senderUid,
-              ...(senderName ? { senderName } : {}),
             },
             android: { priority: "HIGH" },
             apns: {
@@ -154,15 +152,13 @@ export async function sendSilentWake(
 }
 
 // Data-only push for group messages — wakes the background isolate with
-// groupId + groupName + senderName so the notification can show the
-// group context and the client can fetch from the group inbox.
+// the opaque groupId (random grp_*, needed to fetch the right group inbox).
+// Names are resolved locally on-device; Google sees no social graph.
 export async function sendGroupWake(
   env: { FCM_SERVICE_ACCOUNT_JSON?: string; FCM_PROJECT_ID?: string },
   fcmToken: string,
   senderUid: string,
-  senderName: string,
   groupId: string,
-  groupName: string,
 ): Promise<boolean> {
   if (!env.FCM_SERVICE_ACCOUNT_JSON || !env.FCM_PROJECT_ID) {
     return false;
@@ -185,9 +181,7 @@ export async function sendGroupWake(
             data: {
               type: "group_wake",
               senderUid,
-              senderName,
               groupId,
-              groupName,
             },
             android: { priority: "HIGH" },
             apns: {

@@ -47,9 +47,20 @@ class WebSocketTunnelClient {
     return (doubled + jitter).clamp(3, 30);
   }
 
+  /// Signs the server auth challenge (nonce). Set by the app layer from
+  /// KeyStore signing keys — works in the main isolate AND the FCM
+  /// background isolate (pure Dart, no plugins needed).
+  final Future<String?> Function(String nonce)? signChallenge;
+
+  /// True once the relay has accepted our auth. Sends are held until authed
+  /// so nothing is lost to the 10s unauthenticated window.
+  bool _authed = false;
+  bool get isAuthed => _authed;
+
   WebSocketTunnelClient({
     this.baseWsUrl = "wss://airchat-relay.malandkar-sarvesh1.workers.dev",
     required this.uid,
+    this.signChallenge,
   }) {
     _connectivitySub = Connectivity().onConnectivityChanged.listen((results) {
       final hasNet = results.any(
@@ -97,6 +108,22 @@ class WebSocketTunnelClient {
         (data) {
           try {
             final jsonMap = jsonDecode(data as String) as Map<String, dynamic>;
+
+            // Auth challenge: sign nonce+uid, then flush anything held.
+            if (jsonMap['type'] == 'auth_challenge') {
+              _handleAuthChallenge(jsonMap['nonce'] as String?);
+              return;
+            }
+            if (jsonMap['type'] == 'auth_ok') {
+              _setAuthed(true);
+              return;
+            }
+            // Relay closed us for failed auth — reconnect will retry with keys.
+            if (jsonMap['type'] == 'error' &&
+                (jsonMap['message'] as String? ?? '').contains('auth')) {
+              return;
+            }
+
             _messageController.add(jsonMap);
 
             // Auto ACK incoming direct messages
@@ -144,6 +171,28 @@ class WebSocketTunnelClient {
     }
   }
 
+  Future<void> _handleAuthChallenge(String? nonce) async {
+    if (nonce == null || nonce.isEmpty) return;
+    try {
+      final signature = await signChallenge?.call(nonce);
+      if (signature == null || signature.isEmpty) return;
+      _channel?.sink.add(jsonEncode({'action': 'auth', 'signature': signature}));
+    } catch (_) {}
+  }
+
+  /// Called when the relay accepts our auth (server sends no explicit
+  /// auth_ok today — we treat first flushable moment as authed). External
+  /// callers should not need this; kept for tests.
+  void markAuthedForTest() {
+    _authed = true;
+    _flushOutboundQueue();
+  }
+
+  void _setAuthed(bool value) {
+    _authed = value;
+    if (value) _flushOutboundQueue();
+  }
+
   void sendPacket({
     required String recipientUid,
     required String encryptedPayload,
@@ -156,10 +205,11 @@ class WebSocketTunnelClient {
       'packetId': packetId,
     };
 
-    if (_state == TunnelState.connected) {
+    // Hold until authenticated — the relay drops unauthenticated sends.
+    if (_state == TunnelState.connected && _authed) {
       _channel?.sink.add(jsonEncode(packet));
     } else {
-      // Never silently drop — hold for automatic flush on reconnect.
+      // Never silently drop — hold for automatic flush on reconnect+auth.
       _enqueue(packet);
       connect(); // trigger reconnect cycle if not already running
     }
@@ -183,7 +233,7 @@ class WebSocketTunnelClient {
       'senderName': senderName,
     };
 
-    if (_state == TunnelState.connected) {
+    if (_state == TunnelState.connected && _authed) {
       _channel?.sink.add(jsonEncode(packet));
     } else {
       _enqueue(packet);
@@ -202,7 +252,9 @@ class WebSocketTunnelClient {
   }
 
   void sendAck({required String packetId, required String senderUid}) {
-    if (_state != TunnelState.connected) return; // ACKs are best-effort
+    if (_state != TunnelState.connected || !_authed) {
+      return; // ACKs are best-effort
+    }
     _channel?.sink.add(
       jsonEncode({
         'action': 'ack',
@@ -215,7 +267,7 @@ class WebSocketTunnelClient {
   /// Best-effort read receipt: tells the original sender their message
   /// was seen. Only sent while the tunnel is connected.
   void sendReadReceipt({required String packetId, required String senderUid}) {
-    if (_state != TunnelState.connected) return;
+    if (_state != TunnelState.connected || !_authed) return;
     _channel?.sink.add(
       jsonEncode({
         'action': 'read_receipt',
@@ -235,6 +287,7 @@ class WebSocketTunnelClient {
 
   void _handleDisconnect() {
     if (_disposed) return;
+    _authed = false;
     _setState(TunnelState.disconnected);
     _pingTimer?.cancel();
 

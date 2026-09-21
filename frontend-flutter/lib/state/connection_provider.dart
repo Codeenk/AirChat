@@ -3,7 +3,10 @@ import 'dart:convert';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/crash/crash_reporter.dart';
 import '../core/crypto/key_store.dart';
+import '../core/crypto/relay_auth.dart';
+import '../core/crypto/signing_engine.dart';
 import '../core/crypto/sodium_engine.dart';
 import '../core/database/daos/chat_dao.dart';
 import '../core/database/daos/contact_dao.dart';
@@ -52,7 +55,10 @@ final websocketClientProvider = Provider.family<WebSocketTunnelClient, String>((
   ref,
   uid,
 ) {
-  final client = WebSocketTunnelClient(uid: uid);
+  final client = WebSocketTunnelClient(
+    uid: uid,
+    signChallenge: (nonce) => signRelayChallenge(uid, nonce),
+  );
   ref.onDispose(() => client.dispose());
   return client;
 });
@@ -167,6 +173,17 @@ class MessageRouter {
 
     if (senderUid == null || packetId == null || encodedPayload == null) return;
 
+    // Replay window: drop messages older than the 24h cache TTL (+1h skew)
+    // or more than 5min in the future (clock games / replay injection).
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (timestamp < now - 25 * 60 * 60 * 1000 || timestamp > now + 5 * 60 * 1000) {
+      CrashReporter.recordError(
+        error: 'replay/out-of-window dropped from $senderUid',
+        source: 'replay-guard',
+      );
+      return;
+    }
+
     final keyPair = await KeyStore.getKeyPair();
     if (keyPair == null) return;
 
@@ -191,6 +208,29 @@ class MessageRouter {
       if (messageType == 'group_invite' ||
           messageType == 'group_add' ||
           messageType == 'group_kick') {
+        // Verify the control signature — roster changes from anyone but a
+        // member are dropped (relay spoofing / outsider injection).
+        // Missing sig = legacy client → accept (rollout compat).
+        if (decoded['sig'] != null) {
+          final ctrlMembers =
+              (decoded['memberUids'] as List<dynamic>?)?.cast<String>() ?? [];
+          final ctrlGid = decoded['groupId'] as String? ?? '';
+          final directOk = await _verifyControlSender(
+            senderUid: senderUid,
+            type: messageType,
+            groupId: ctrlGid,
+            memberUids: ctrlMembers,
+            signature: decoded['sig'] as String?,
+          );
+          if (!directOk) {
+            CrashReporter.recordError(
+              error: 'group control sig invalid from $senderUid',
+              source: 'group-verify',
+            );
+            return;
+          }
+        }
+
         final gid = groupId ?? decoded['groupId'] as String? ?? '';
         final gname = groupName ?? decoded['groupName'] as String? ?? 'Group';
         final memberUids =
@@ -201,6 +241,7 @@ class MessageRouter {
               (decoded['kickedUid'] as String? ?? '') == uid) {
             await GroupDao().deleteGroup(gid);
           } else {
+            final wasKick = messageType == 'group_kick';
             // If we already have this group locally, preserve the existing groupKey
             // unless the incoming payload carries a new one (key rotation).
             final existing = await GroupDao().getGroupById(gid);
@@ -214,6 +255,12 @@ class MessageRouter {
                 groupKey: effectiveKey,
               ),
             );
+            // A kick changed the roster: survivors must rotate the key so the
+            // removed member's copy dies. The rotating broadcast carries the
+            // new key (see GroupActions.rotateGroupKey).
+            if (wasKick) {
+              bus.fire(RefreshEvent(type: 'rekey', chatId: gid));
+            }
           }
           bus.fire(RefreshEvent(type: 'messages', chatId: gid));
         }
@@ -326,6 +373,17 @@ class MessageRouter {
 
     if (groupId.isEmpty || encodedPayload.isEmpty) return;
 
+    // Replay window (same policy as 1:1).
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (timestamp < nowMs - 25 * 60 * 60 * 1000 ||
+        timestamp > nowMs + 5 * 60 * 1000) {
+      CrashReporter.recordError(
+        error: 'group replay/out-of-window dropped from $senderUid',
+        source: 'replay-guard',
+      );
+      return;
+    }
+
     // Look up the local group and its symmetric groupKey.
     final localGroup = await GroupDao().getGroupById(groupId);
     if (localGroup == null) return; // group not known locally — ignore
@@ -347,6 +405,22 @@ class MessageRouter {
       final secretKeyHex = decoded['secretKeyHex'];
       final nonceHex = decoded['nonceHex'];
       final replyTo = (decoded['replyTo'] as Map<String, dynamic>?) ?? const {};
+
+      // Verify sender signature (drops relay/member spoofing).
+      final sigOk = await _verifyGroupSender(
+        senderUid: senderUid,
+        packetId: packetId,
+        text: text,
+        groupId: groupId,
+        signature: decoded['sig'] as String?,
+      );
+      if (!sigOk) {
+        CrashReporter.recordError(
+          error: 'group sig invalid from $senderUid in $groupId',
+          source: 'group-verify',
+        );
+        return;
+      }
 
       // Resolve sender name: prefer the name in the payload, then relay, then contact.
       String contactName = decoded['senderName'] as String? ?? senderNameFromRelay;
@@ -398,6 +472,88 @@ class MessageRouter {
     }
   }
 
+  /// Verifies a group payload signature: Ed25519(packetId|text|groupId).
+  /// Missing sig = legacy client → accept (rollout compat). Invalid sig →
+  /// drop + log (relay/member spoofing attempt). Fetches + caches the
+  /// sender's signing key on demand.
+  Future<bool> _verifyGroupSender({
+    required String senderUid,
+    required String packetId,
+    required String text,
+    required String groupId,
+    required String? signature,
+  }) async {
+    if (signature == null || signature.isEmpty) return true;
+    try {
+      var contact = await contactDao.getContactByUid(senderUid);
+      var signingKey = contact?.signingPublicKey;
+      if (signingKey == null || signingKey.isEmpty) {
+        final info = await const ApiClient().lookupIdentity(uid: senderUid);
+        signingKey = info?['signing_public_key'] as String?;
+        if (signingKey != null && signingKey.isNotEmpty && contact != null) {
+          await contactDao.insertContact(
+            Contact(
+              uid: contact.uid,
+              username: contact.username,
+              identityPublicKey: contact.identityPublicKey,
+              signingPublicKey: signingKey,
+              createdAt: contact.createdAt,
+            ),
+          );
+        }
+      }
+      if (signingKey == null || signingKey.isEmpty) return true;
+      final engine = SigningEngine();
+      final ok = await engine.verifyHex(
+        message: '$packetId|$text|$groupId',
+        signatureHex: signature,
+        publicKeyHex: signingKey,
+      );
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Verifies a group CONTROL signature: Ed25519(type|groupId|roster).
+  /// Missing key → fetch + cache from directory, then verify.
+  Future<bool> _verifyControlSender({
+    required String senderUid,
+    required String type,
+    required String groupId,
+    required List<String> memberUids,
+    required String? signature,
+  }) async {
+    if (signature == null || signature.isEmpty) return true;
+    try {
+      var contact = await contactDao.getContactByUid(senderUid);
+      var signingKey = contact?.signingPublicKey;
+      if (signingKey == null || signingKey.isEmpty) {
+        final info = await const ApiClient().lookupIdentity(uid: senderUid);
+        signingKey = info?['signing_public_key'] as String?;
+        if (signingKey != null && signingKey.isNotEmpty && contact != null) {
+          await contactDao.insertContact(
+            Contact(
+              uid: contact.uid,
+              username: contact.username,
+              identityPublicKey: contact.identityPublicKey,
+              signingPublicKey: signingKey,
+              createdAt: contact.createdAt,
+            ),
+          );
+        }
+      }
+      if (signingKey == null || signingKey.isEmpty) return true;
+      return await SigningEngine().verifyHex(
+        message: '$type|$groupId|${memberUids.join(',')}',
+        signatureHex: signature,
+        publicKeyHex: signingKey,
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Fire-and-forget: resolve or upgrade contact name from directory.
   /// Updates local DB and fires a RefreshBus event so UI surfaces pick up
   /// the real name without blocking message processing.
@@ -414,21 +570,33 @@ class MessageRouter {
             uid: senderUid,
             username: username,
             identityPublicKey: publicKey,
+            signingPublicKey: info?['signing_public_key'] as String?,
             createdAt: DateTime.now().millisecondsSinceEpoch,
           ),
         );
         bus.fire(RefreshEvent(type: 'messages'));
-      } else if (_isFallbackName(existing.username)) {
+      } else if (_isFallbackName(existing.username) ||
+          (existing.signingPublicKey?.isEmpty ?? true)) {
         final info = await const ApiClient().lookupIdentity(uid: senderUid);
         final realName = info?['username'] as String?;
-        if (realName != null &&
-            realName.isNotEmpty &&
-            realName != existing.username) {
+        final signingKey = info?['signing_public_key'] as String?;
+        if ((realName != null &&
+                realName.isNotEmpty &&
+                realName != existing.username) ||
+            (signingKey != null &&
+                signingKey.isNotEmpty &&
+                signingKey != existing.signingPublicKey)) {
           await contactDao.insertContact(
             Contact(
               uid: existing.uid,
-              username: realName,
+              username: (realName != null && realName.isNotEmpty)
+                  ? realName
+                  : existing.username,
               identityPublicKey: existing.identityPublicKey,
+              signingPublicKey:
+                  (signingKey != null && signingKey.isNotEmpty)
+                      ? signingKey
+                      : existing.signingPublicKey,
               createdAt: existing.createdAt,
             ),
           );

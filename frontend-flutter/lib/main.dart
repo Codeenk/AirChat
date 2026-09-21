@@ -17,6 +17,7 @@ import 'core/network/notification_service.dart';
 import 'core/network/websocket_client.dart';
 import 'core/theme/colors.dart';
 import 'state/connection_provider.dart';
+import 'state/group_provider.dart';
 import 'ui/screens/home_chat_list_screen.dart';
 
 void main() async {
@@ -106,6 +107,31 @@ Future<String> _loadLocalIdentity(ProviderContainer container) async {
     return newUid;
   }
 
+  // Migration: identities created before signing keys existed can't pass
+  // WS auth. Generate + persist; _initializeServices re-registers the
+  // public halves with the directory.
+  try {
+    if (await KeyStore.getSigningKeyPair() == null) {
+      final signingEngine = SigningEngine();
+      final signingKeyPair = await signingEngine.generateSigningKeyPair();
+      await KeyStore.saveSigningKeyPair(signingKeyPair);
+      final pubKey = await KeyStore.getPublicKey() ?? '';
+      if (pubKey.isNotEmpty) {
+        final signingPublicKeyHex =
+            await signingEngine.exportSigningPublicKeyHex(signingKeyPair);
+        final signingSignature =
+            await signingEngine.signHex(pubKey, signingKeyPair);
+        await const ApiClient().registerIdentity(
+          uid: uid,
+          username: await KeyStore.getUsername() ?? '',
+          identityPublicKey: pubKey,
+          signingPublicKey: signingPublicKeyHex,
+          signingSignature: signingSignature,
+        );
+      }
+    }
+  } catch (_) {}
+
   await KeyStore.getOrCreateDatabaseMasterKey();
   container.read(currentUidProvider.notifier).state = uid;
   return uid;
@@ -124,6 +150,8 @@ Future<void> _initializeServices(
   } catch (_) {}
 
   container.read(messageRouterProvider(uid));
+  // Group re-key watcher: rotates group keys when kicks are observed.
+  container.read(groupRekeyWatcherProvider);
 
   unawaited(
     Future.delayed(

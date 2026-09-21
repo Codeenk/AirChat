@@ -2,12 +2,14 @@ class Contact {
   final String uid;
   final String username;
   final String identityPublicKey;
+  final String? signingPublicKey;
   final int createdAt;
 
   Contact({
     required this.uid,
     required this.username,
     required this.identityPublicKey,
+    this.signingPublicKey,
     required this.createdAt,
   });
 
@@ -15,6 +17,7 @@ class Contact {
     'uid': uid,
     'username': username,
     'identity_public_key': identityPublicKey,
+    'signing_public_key': signingPublicKey,
     'created_at': createdAt,
   };
 
@@ -22,6 +25,7 @@ class Contact {
     uid: map['uid'],
     username: map['username'],
     identityPublicKey: map['identity_public_key'],
+    signingPublicKey: map['signing_public_key'] as String?,
     createdAt: map['created_at'],
   );
 }
