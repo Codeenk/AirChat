@@ -27,7 +27,7 @@ class AppDatabase {
       return await databaseFactoryFfiWeb.openDatabase(
         '/airchat/airchat_web.db',
         options: OpenDatabaseOptions(
-          version: 7,
+          version: 8,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         ),
@@ -41,7 +41,7 @@ class AppDatabase {
       return await openDatabase(
         path,
         password: masterKey,
-        version: 7,
+        version: 8,
         onCreate: _onCreate,
         onUpgrade: _onUpgrade,
       );
@@ -55,7 +55,7 @@ class AppDatabase {
         return await openDatabase(
           path,
           password: masterKey,
-          version: 7,
+          version: 8,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         );
@@ -81,6 +81,7 @@ class AppDatabase {
         uid TEXT PRIMARY KEY,
         username TEXT NOT NULL,
         identity_public_key TEXT NOT NULL,
+        signing_public_key TEXT,
         created_at INTEGER NOT NULL
       )
     ''');
@@ -210,6 +211,15 @@ class AppDatabase {
     }
     if (oldVersion < 7) {
       // v7: sender signing keys for message/control verification.
+      try {
+        await db.execute('ALTER TABLE contacts ADD COLUMN signing_public_key TEXT');
+      } catch (e) {
+        if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;
+      }
+    }
+    if (oldVersion < 8) {
+      // v8: repair — v7 fresh installs created contacts without
+      // signing_public_key (_onCreate gap). Idempotent.
       try {
         await db.execute('ALTER TABLE contacts ADD COLUMN signing_public_key TEXT');
       } catch (e) {
