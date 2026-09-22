@@ -62,6 +62,10 @@ final chatDaoProvider = Provider((_) => ChatDao());
 final messageDaoProvider = Provider((_) => MessageDao());
 final sodiumEngineProvider = Provider((_) => SodiumEngine());
 
+/// Last auth-failure-triggered re-register, to avoid hammering the
+/// directory on every reconnect cycle while the key is missing.
+DateTime? _lastAuthHealAt;
+
 final websocketClientProvider = Provider.family<WebSocketTunnelClient, String>((
   ref,
   uid,
@@ -69,6 +73,32 @@ final websocketClientProvider = Provider.family<WebSocketTunnelClient, String>((
   final client = WebSocketTunnelClient(
     uid: uid,
     signChallenge: (nonce) => signRelayChallenge(uid, nonce),
+    onAuthFailure: () async {
+      // The relay rejected our auth — almost always a missing/stale signing
+      // key server-side. Re-register (upsert) so the directory holds our
+      // current key, then the normal reconnect cycle heals. Cooldown 5 min.
+      final now = DateTime.now();
+      if (_lastAuthHealAt != null &&
+          now.difference(_lastAuthHealAt!).inMinutes < 5) {
+        return;
+      }
+      _lastAuthHealAt = now;
+      try {
+        var signingKp = await KeyStore.getSigningKeyPair();
+        if (signingKp == null) {
+          final engine = SigningEngine();
+          signingKp = await engine.generateSigningKeyPair();
+          await KeyStore.saveSigningKeyPair(signingKp);
+        }
+        final pubKey = await KeyStore.getPublicKey() ?? '';
+        if (pubKey.isEmpty) return;
+        await const ApiClient().registerIdentity(
+          uid: uid,
+          username: await KeyStore.getUsername() ?? '',
+          identityPublicKey: pubKey,
+        );
+      } catch (_) {}
+    },
   );
   ref.onDispose(() => client.dispose());
   return client;

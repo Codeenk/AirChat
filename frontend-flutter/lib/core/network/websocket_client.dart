@@ -52,6 +52,11 @@ class WebSocketTunnelClient {
   /// background isolate (pure Dart, no plugins needed).
   final Future<String?> Function(String nonce)? signChallenge;
 
+  /// Fired when the relay rejects our auth (socket closed after a challenge
+  /// without auth_ok). The app layer should re-register its signing key,
+  /// then let the normal reconnect cycle retry. Cooldown enforced by caller.
+  final Future<void> Function()? onAuthFailure;
+
   /// True once the relay has accepted our auth. Sends are held until authed
   /// so nothing is lost to the 10s unauthenticated window.
   bool _authed = false;
@@ -59,10 +64,13 @@ class WebSocketTunnelClient {
   bool _sawAuthChallenge = false;
   Timer? _legacyRelayTimer;
 
+  DateTime? _connectStartedAt;
+
   WebSocketTunnelClient({
     this.baseWsUrl = "wss://airchat-relay.malandkar-sarvesh1.workers.dev",
     required this.uid,
     this.signChallenge,
+    this.onAuthFailure,
   }) {
     _connectivitySub = Connectivity().onConnectivityChanged.listen((results) {
       final hasNet = results.any(
@@ -86,6 +94,7 @@ class WebSocketTunnelClient {
     }
 
     _setState(TunnelState.connecting);
+    _connectStartedAt = DateTime.now();
     final url = Uri.parse("$baseWsUrl/tunnel?uid=$uid");
 
     try {
@@ -305,11 +314,25 @@ class WebSocketTunnelClient {
 
   void _handleDisconnect() {
     if (_disposed) return;
+    // Auth rejected us (challenged but never accepted, socket died fast):
+    // our signing key is likely missing/stale server-side. Ask the app
+    // layer to re-register, then reconnect heals on the next cycle.
+    final challenged = _sawAuthChallenge;
+    final wasAuthed = _authed;
+    final startedAt = _connectStartedAt;
     _authed = false;
     _sawAuthChallenge = false;
     _legacyRelayTimer?.cancel();
     _setState(TunnelState.disconnected);
     _pingTimer?.cancel();
+    if (challenged &&
+        !wasAuthed &&
+        startedAt != null &&
+        DateTime.now().difference(startedAt).inSeconds < 20) {
+      try {
+        onAuthFailure?.call();
+      } catch (_) {}
+    }
 
     try {
       _channel?.sink.close();
