@@ -1,23 +1,27 @@
 import 'dart:ui' show ImageFilter;
 
+import 'package:flutter/foundation.dart'
+    show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../core/crypto/key_store.dart';
 import '../../core/database/daos/chat_dao.dart';
 import '../../core/database/daos/contact_dao.dart';
+import '../../core/database/daos/group_dao.dart';
 import '../../core/network/api_client.dart';
 import '../../core/battery/battery_opt_helper.dart';
 import '../../core/theme/colors.dart';
+import '../../core/theme/time_format.dart';
 import '../../core/update/update_checker.dart';
 import '../../models/contact.dart';
-import '../../core/database/daos/group_dao.dart';
 import '../../models/chat_thread.dart';
 import '../../models/group.dart';
 import '../../state/chat_provider.dart';
-import '../../state/group_provider.dart';
+import '../../state/connection_provider.dart';
+import '../../state/home_provider.dart';
+import '../../state/refresh_bus.dart';
 import 'chat_room_screen.dart';
 import 'create_group_screen.dart';
 import 'group_chat_screen.dart';
@@ -35,10 +39,13 @@ class HomeChatListScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
+  /// Self-updating an APK only makes sense on Android.
+  bool get _updatesSupported =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
   @override
   void initState() {
     super.initState();
-    _refreshAfterInteraction();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _onLaunch();
       if (mounted) await BatteryOptHelper.maybePromptOnFirstLaunch(context);
@@ -50,6 +57,8 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
   /// never again until the next release.
   Future<void> _onLaunch() async {
     final packageInfo = await PackageInfo.fromPlatform();
+
+    if (!_updatesSupported) return;
 
     final update = await UpdateChecker.checkForUpdate();
     if (!mounted) return;
@@ -68,6 +77,7 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
   }
 
   Future<void> _checkForUpdates({required bool silent}) async {
+    if (!_updatesSupported) return;
     final update = await UpdateChecker.checkForUpdate();
     if (!mounted) return;
     if (update == null) {
@@ -117,14 +127,7 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
     );
   }
 
-  void _refreshAfterInteraction() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      ref.invalidate(chatThreadsProvider);
-    });
-  }
-
   /// Single entry point for creation + identity, anchored to the + button.
-  /// One thumb-reachable action replaces three top-corner icons.
   void _showNewSheet(BuildContext context) {
     void go(Widget page) {
       Navigator.pop(context);
@@ -151,52 +154,76 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
               ),
               border: Border.all(color: AirColors.border),
             ),
-          child: SafeArea(
-            top: false,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 36,
-                  height: 4,
-                  margin: const EdgeInsets.only(bottom: 12),
-                  decoration: BoxDecoration(
-                    color: AirColors.border,
-                    borderRadius: BorderRadius.circular(2),
+            child: SafeArea(
+              top: false,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 36,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 12),
+                    decoration: BoxDecoration(
+                      color: AirColors.border,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
                   ),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.person_add_outlined,
-                      color: AirColors.textPrimary),
-                  title: const Text('New chat',
-                      style: TextStyle(color: AirColors.textPrimary)),
-                  subtitle: const Text('Scan a contact QR',
-                      style:
-                          TextStyle(color: AirColors.textSecondary, fontSize: 12)),
-                  onTap: () => go(const QrScannerScreen()),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.group_add,
-                      color: AirColors.textPrimary),
-                  title: const Text('New group',
-                      style: TextStyle(color: AirColors.textPrimary)),
-                  subtitle: const Text('Chat with several contacts',
-                      style:
-                          TextStyle(color: AirColors.textSecondary, fontSize: 12)),
-                  onTap: () => go(const CreateGroupScreen()),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.qr_code_2,
-                      color: AirColors.textPrimary),
-                  title: const Text('My QR code',
-                      style: TextStyle(color: AirColors.textPrimary)),
-                  onTap: () => go(const QrIdentityScreen()),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.badge_outlined,
-                      color: AirColors.textPrimary),
-                  title: const Text('Display name',
-                      style: TextStyle(color: AirColors.textPrimary)),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.person_add_outlined,
+                      color: AirColors.textPrimary,
+                    ),
+                    title: const Text(
+                      'New chat',
+                      style: TextStyle(color: AirColors.textPrimary),
+                    ),
+                    subtitle: const Text(
+                      'Scan a contact QR',
+                      style: TextStyle(
+                        color: AirColors.textSecondary,
+                        fontSize: 12,
+                      ),
+                    ),
+                    onTap: () => go(const QrScannerScreen()),
+                  ),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.group_add,
+                      color: AirColors.textPrimary,
+                    ),
+                    title: const Text(
+                      'New group',
+                      style: TextStyle(color: AirColors.textPrimary),
+                    ),
+                    subtitle: const Text(
+                      'Chat with several contacts',
+                      style: TextStyle(
+                        color: AirColors.textSecondary,
+                        fontSize: 12,
+                      ),
+                    ),
+                    onTap: () => go(const CreateGroupScreen()),
+                  ),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.qr_code_2,
+                      color: AirColors.textPrimary,
+                    ),
+                    title: const Text(
+                      'My QR code',
+                      style: TextStyle(color: AirColors.textPrimary),
+                    ),
+                    onTap: () => go(const QrIdentityScreen()),
+                  ),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.badge_outlined,
+                      color: AirColors.textPrimary,
+                    ),
+                    title: const Text(
+                      'Display name',
+                      style: TextStyle(color: AirColors.textPrimary),
+                    ),
                     onTap: () => go(const UsernameSettingsScreen()),
                   ),
                 ],
@@ -210,8 +237,7 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final asyncThreads = ref.watch(chatThreadsProvider);
-    final groupsAsync = ref.watch(groupsProvider);
+    final asyncEntries = ref.watch(homeEntriesProvider);
 
     return Scaffold(
       backgroundColor: AirColors.background,
@@ -237,9 +263,13 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
                 );
               }
             },
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'update', child: Text('Check for updates')),
-              PopupMenuItem(
+            itemBuilder: (_) => [
+              if (_updatesSupported)
+                const PopupMenuItem(
+                  value: 'update',
+                  child: Text('Check for updates'),
+                ),
+              const PopupMenuItem(
                 value: 'health',
                 child: Text('Notification health'),
               ),
@@ -247,7 +277,7 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
           ),
         ],
       ),
-      body: asyncThreads.when(
+      body: asyncEntries.when(
         loading: () => const Center(
           child: CircularProgressIndicator(
             color: AirColors.accent,
@@ -260,72 +290,11 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
             style: const TextStyle(color: AirColors.textSecondary),
           ),
         ),
-        data: (threads) {
-          final groups = groupsAsync.asData?.value ?? [];
-          if (threads.isEmpty && groups.isEmpty) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(
-                    Icons.lock_outline,
-                    size: 44,
-                    color: AirColors.textFaint,
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    "No chats yet",
-                    style: TextStyle(
-                      color: AirColors.textPrimary,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    "Scan a peer's QR code to start an\nend-to-end encrypted conversation.",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: AirColors.textSecondary,
-                      fontSize: 13,
-                      height: 1.4,
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  FilledButton.icon(
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const QrScannerScreen(),
-                        ),
-                      );
-                    },
-                    style: FilledButton.styleFrom(
-                      backgroundColor: AirColors.bubbleMe,
-                      foregroundColor: AirColors.bubbleMeText,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 12,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(24),
-                      ),
-                    ),
-                    icon: const Icon(Icons.qr_code_scanner, size: 18),
-                    label: const Text("Scan Contact QR"),
-                  ),
-                ],
-              ),
-            );
-          }
-          return ListView(
-            children: [
-              ...groups.map((g) => _buildGroupTile(context, g)),
-              if (groups.isNotEmpty && threads.isNotEmpty)
-                const Divider(color: AirColors.divider, height: 1),
-              ...threads.map((t) => _buildChatTile(context, t)),
-            ],
+        data: (entries) {
+          if (entries.isEmpty) return _buildEmptyState();
+          return ListView.builder(
+            itemCount: entries.length,
+            itemBuilder: (_, i) => _buildEntryTile(context, entries[i]),
           );
         },
       ),
@@ -333,6 +302,7 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
         backgroundColor: AirColors.bubbleMe,
         foregroundColor: AirColors.bubbleMeText,
         shape: const CircleBorder(),
+        tooltip: 'Scan contact QR',
         child: const Icon(Icons.qr_code_scanner),
         onPressed: () {
           Navigator.push(
@@ -344,17 +314,71 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
     );
   }
 
-  Widget _buildChatTile(BuildContext context, ChatThread thread) {
-    final timeStr = DateFormat('h:mm a')
-        .format(DateTime.fromMillisecondsSinceEpoch(thread.lastMessageTime));
-
-    // Contact username is pre-loaded via JOIN query — no FutureBuilder needed.
-    final displayName = thread.contactUsername.isNotEmpty
-        ? thread.contactUsername
-        : "Peer";
-    final leading = _Avatar(
-      letter: displayName.isNotEmpty ? displayName[0].toUpperCase() : 'P',
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.lock_outline, size: 44, color: AirColors.textFaint),
+          const SizedBox(height: 16),
+          const Text(
+            "No chats yet",
+            style: TextStyle(
+              color: AirColors.textPrimary,
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            "Scan a peer's QR code to start an\nend-to-end encrypted conversation.",
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: AirColors.textSecondary,
+              fontSize: 13,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 24),
+          FilledButton.icon(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const QrScannerScreen()),
+              );
+            },
+            style: FilledButton.styleFrom(
+              backgroundColor: AirColors.bubbleMe,
+              foregroundColor: AirColors.bubbleMeText,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(24),
+              ),
+            ),
+            icon: const Icon(Icons.qr_code_scanner, size: 18),
+            label: const Text("Scan Contact QR"),
+          ),
+        ],
+      ),
     );
+  }
+
+  Widget _buildEntryTile(BuildContext context, HomeEntry entry) {
+    final timeStr = formatListTimestamp(entry.lastActivity);
+    final title = entry.title;
+    final leading = entry.isGroup
+        ? Container(
+            width: 48,
+            height: 48,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: AirColors.accent.withOpacity(0.15),
+              shape: BoxShape.circle,
+              border: Border.all(color: AirColors.accent.withOpacity(0.4)),
+            ),
+            child: const Icon(Icons.group, color: AirColors.accent, size: 22),
+          )
+        : _Avatar(letter: title.isNotEmpty ? title[0].toUpperCase() : 'P');
 
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -364,7 +388,9 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
         children: [
           Expanded(
             child: Text(
-              displayName,
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: AirColors.textPrimary,
                 fontWeight: FontWeight.w600,
@@ -373,6 +399,7 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
               ),
             ),
           ),
+          const SizedBox(width: 8),
           Text(
             timeStr,
             style: const TextStyle(color: AirColors.textFaint, fontSize: 12),
@@ -385,7 +412,7 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
           children: [
             Expanded(
               child: Text(
-                thread.lastMessage,
+                entry.subtitle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
@@ -394,7 +421,7 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
                 ),
               ),
             ),
-            if (thread.unreadCount > 0) ...[
+            if (entry.unread > 0) ...[
               const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -405,7 +432,7 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
                 constraints: const BoxConstraints(minWidth: 22),
                 alignment: Alignment.center,
                 child: Text(
-                  thread.unreadCount > 99 ? '99+' : '${thread.unreadCount}',
+                  entry.unread > 99 ? '99+' : '${entry.unread}',
                   style: const TextStyle(
                     color: AirColors.background,
                     fontSize: 11,
@@ -417,112 +444,77 @@ class _HomeChatListScreenState extends ConsumerState<HomeChatListScreen> {
           ],
         ),
       ),
-      onTap: () async {
-        var contact = await ContactDao().getContactByUid(thread.contactUid);
-
-        // Self-heal: missing or keyless contact gets resolved from directory
-        if (contact == null || contact.identityPublicKey.isEmpty) {
-          try {
-            final info = await const ApiClient().lookupIdentity(
-              uid: thread.contactUid,
-            );
-            if (info != null) {
-              contact = Contact(
-                uid: thread.contactUid,
-                username: (info['username'] as String?) ?? 'Peer',
-                identityPublicKey:
-                    (info['identity_public_key'] as String?) ?? '',
-                createdAt: DateTime.now().millisecondsSinceEpoch,
-              );
-              await ContactDao().insertContact(contact);
-            }
-          } catch (_) {}
-        }
-
-        if (contact == null) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text("Contact unavailable")));
-          return;
-        }
-        final resolved = Contact(
-          uid: contact.uid,
-          username: contact.username,
-          identityPublicKey: contact.identityPublicKey,
-          createdAt: contact.createdAt,
-        );
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => ChatRoomScreen(
-              contactName: resolved.username,
-              contactUid: resolved.uid,
-              contactPublicKey: resolved.identityPublicKey,
-            ),
-          ),
-        ).then((_) async {
-          // Opening the chat clears its unread badge.
-          final myUid = await KeyStore.getUid();
-          if (myUid != null) {
-            await ChatDao().resetUnread(buildChatId(myUid, thread.contactUid));
-          }
-        });
-      },
+      onTap: () =>
+          entry.isGroup ? _openGroup(entry.group!) : _openChat(entry.chat!),
     );
   }
 
-  Widget _buildGroupTile(BuildContext context, Group group) {
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      leading: Container(
-        width: 48,
-        height: 48,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: AirColors.accent.withOpacity(0.15),
-          shape: BoxShape.circle,
-          border: Border.all(color: AirColors.accent.withOpacity(0.4)),
-        ),
-        child: const Icon(Icons.group, color: AirColors.accent, size: 22),
-      ),
-      title: Text(
-        group.name,
-        style: const TextStyle(
-          color: AirColors.textPrimary,
-          fontWeight: FontWeight.w600,
-          fontSize: 16,
-        ),
-      ),
-      subtitle: Row(
-        children: [
-          Expanded(
-            child: Text(
-              '${group.memberUids.length} members',
-              style: const TextStyle(color: AirColors.textSecondary, fontSize: 13),
-            ),
-          ),
-          if (group.unreadCount > 0)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              decoration: BoxDecoration(color: AirColors.accent, borderRadius: BorderRadius.circular(12)),
-              constraints: const BoxConstraints(minWidth: 22),
-              alignment: Alignment.center,
-              child: Text(
-                group.unreadCount > 99 ? '99+' : '${group.unreadCount}',
-                style: const TextStyle(color: AirColors.background, fontSize: 11, fontWeight: FontWeight.w700),
-              ),
-            ),
-        ],
-      ),
-      onTap: () async {
-        await GroupDao().resetUnread(group.id);
-        if (context.mounted) {
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => GroupChatScreen(group: group)),
+  Future<void> _openGroup(Group group) async {
+    // Clear the badge immediately (not after returning).
+    await GroupDao().resetUnread(group.id);
+    if (!mounted) return;
+    ref
+        .read(refreshBusProvider)
+        .fire(RefreshEvent(type: 'messages', chatId: group.id));
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => GroupChatScreen(group: group)),
+    );
+  }
+
+  Future<void> _openChat(ChatThread thread) async {
+    var contact = await ContactDao().getContactByUid(thread.contactUid);
+
+    // Self-heal: missing or keyless contact gets resolved from directory
+    if (contact == null || contact.identityPublicKey.isEmpty) {
+      try {
+        final info = await const ApiClient().lookupIdentity(
+          uid: thread.contactUid,
+        );
+        if (info != null) {
+          contact = Contact(
+            uid: thread.contactUid,
+            username: (info['username'] as String?) ?? 'Peer',
+            identityPublicKey: (info['identity_public_key'] as String?) ?? '',
+            signingPublicKey: info['signing_public_key'] as String?,
+            createdAt: DateTime.now().millisecondsSinceEpoch,
           );
+          await ContactDao().insertContact(contact);
         }
-      },
+      } catch (_) {}
+    }
+
+    if (!mounted) return;
+    if (contact == null || contact.identityPublicKey.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text("Contact unavailable")));
+      return;
+    }
+
+    // Clear the badge immediately (not after returning).
+    final myUid = await KeyStore.getUid();
+    if (myUid != null) {
+      await ChatDao().resetUnread(buildChatId(myUid, thread.contactUid));
+      ref
+          .read(refreshBusProvider)
+          .fire(
+            RefreshEvent(
+              type: 'messages',
+              chatId: buildChatId(myUid, thread.contactUid),
+            ),
+          );
+    }
+    if (!mounted) return;
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChatRoomScreen(
+          contactName: contact!.username,
+          contactUid: contact.uid,
+          contactPublicKey: contact.identityPublicKey,
+        ),
+      ),
     );
   }
 }

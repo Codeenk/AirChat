@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
 /// Privacy-friendly, fully local crash/error log.
@@ -15,7 +16,7 @@ class CrashReporter {
 
   static const int _maxLogBytes = 200 * 1024;
   static const String _fileName = 'airchat_diagnostics.jsonl';
-  static const String _appVersion = '1.2.0';
+  static String _appVersion = 'unknown';
 
   static File? _logFile;
   static bool _initialized = false;
@@ -23,6 +24,8 @@ class CrashReporter {
   static Future<void> initialize() async {
     if (_initialized || kIsWeb) return;
     try {
+      final info = await PackageInfo.fromPlatform();
+      _appVersion = info.version;
       final dir = await getApplicationDocumentsDirectory();
       _logFile = File('${dir.path}/$_fileName');
       _initialized = true;

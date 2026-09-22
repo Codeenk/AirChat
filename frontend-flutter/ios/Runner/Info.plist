@@ -4,6 +4,20 @@
 <dict>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<!-- Background delivery of silent FCM wakes (data-only pushes). -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+		<string>fetch</string>
+	</array>
+	<!-- Required usage descriptions: iOS terminates the app if it accesses
+	     the camera/microphone/photos without these. -->
+	<key>NSCameraUsageDescription</key>
+	<string>AirChat uses the camera to scan contact QR codes and to take photos you send in encrypted chats.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>AirChat uses the microphone to record voice notes you send in encrypted chats.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>AirChat needs access to your photos so you can send them in encrypted chats.</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>

@@ -74,8 +74,6 @@ class PushService {
     FirebaseMessaging.onMessage.listen((message) {
       _handleWake(message);
     });
-
-    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
   }
 
   /// THE fix for "notifications don't arrive when the app is killed":
@@ -168,8 +166,19 @@ void _showGroupWakeNotification(RemoteMessage message) {
   _showWakeNotification(message);
 }
 
+/// Registers the FCM background handler. MUST be called before `runApp` so the
+/// killed-state background isolate can spawn this handler. Safe to call on
+/// every platform (non-Firebase platforms simply no-op).
+void registerFirebaseBackgroundHandler() {
+  try {
+    FirebaseMessaging.onBackgroundMessage(airchatBackgroundHandler);
+  } catch (e) {
+    debugPrint('[AirChat] bg handler registration failed: $e');
+  }
+}
+
 @pragma('vm:entry-point')
-Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+Future<void> airchatBackgroundHandler(RemoteMessage message) async {
   debugPrint('[AirChat][bg] handler entered data=${message.data}');
   try {
     // Fresh background isolate — everything must be initialized from scratch.
@@ -214,10 +223,10 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
           );
           if (groupId != null) {
             final group = await GroupDao().getGroupById(groupId);
-            final senderName =
-                await _resolveSenderName(message.data['senderUid'] as String);
-            groupTitleOverride =
-                '${group?.name ?? 'Group'} • $senderName';
+            final senderName = await _resolveSenderName(
+              message.data['senderUid'] as String,
+            );
+            groupTitleOverride = '${group?.name ?? 'Group'} • $senderName';
           }
         }
       }
@@ -351,10 +360,14 @@ Future<String?> _fetchQueuedMessage(RemoteMessage message) async {
         // Relay auth: sign the challenge so the inbox actually flushes.
         if (msg['type'] == 'auth_challenge') {
           Future(() async {
-            final sig =
-                await signRelayChallenge(myUid, msg['nonce'] as String? ?? '');
+            final sig = await signRelayChallenge(
+              myUid,
+              msg['nonce'] as String? ?? '',
+            );
             if (sig != null && sig.isNotEmpty) {
-              channel.sink.add(jsonEncode({'action': 'auth', 'signature': sig}));
+              channel.sink.add(
+                jsonEncode({'action': 'auth', 'signature': sig}),
+              );
             }
           });
           return;
@@ -379,7 +392,8 @@ Future<String?> _fetchQueuedMessage(RemoteMessage message) async {
           // Detect legacy group messages that arrive via the 1:1 path
           // (sent by old clients before group_packet support).
           final payloadGroupId = decoded['groupId'] as String?;
-          final isGroupMsg = payloadGroupId != null && payloadGroupId.isNotEmpty;
+          final isGroupMsg =
+              payloadGroupId != null && payloadGroupId.isNotEmpty;
 
           String chatId;
           if (isGroupMsg) {
@@ -501,7 +515,9 @@ Future<String?> _fetchGroupMessage(RemoteMessage message) async {
     if (!completer.isCompleted) completer.complete(null);
   });
 
-  debugPrint('[AirChat][bg] group fetch: WS connect as $myUid for group $groupId');
+  debugPrint(
+    '[AirChat][bg] group fetch: WS connect as $myUid for group $groupId',
+  );
   final channel = WebSocketChannel.connect(
     Uri.parse(
       'wss://airchat-relay.malandkar-sarvesh1.workers.dev/tunnel?uid=$myUid',
@@ -520,10 +536,14 @@ Future<String?> _fetchGroupMessage(RemoteMessage message) async {
         // Relay auth: sign the challenge so the inbox actually flushes.
         if (msg['type'] == 'auth_challenge') {
           Future(() async {
-            final sig =
-                await signRelayChallenge(myUid, msg['nonce'] as String? ?? '');
+            final sig = await signRelayChallenge(
+              myUid,
+              msg['nonce'] as String? ?? '',
+            );
             if (sig != null && sig.isNotEmpty) {
-              channel.sink.add(jsonEncode({'action': 'auth', 'signature': sig}));
+              channel.sink.add(
+                jsonEncode({'action': 'auth', 'signature': sig}),
+              );
             }
           });
           return;
@@ -556,8 +576,7 @@ Future<String?> _fetchGroupMessage(RemoteMessage message) async {
                 decoded['senderName'] as String? ?? msgSenderName;
             if (resolvedName.isEmpty) {
               try {
-                final contact =
-                    await ContactDao().getContactByUid(senderUid);
+                final contact = await ContactDao().getContactByUid(senderUid);
                 if (contact != null && contact.username.isNotEmpty) {
                   resolvedName = contact.username;
                 }
@@ -585,21 +604,24 @@ Future<String?> _fetchGroupMessage(RemoteMessage message) async {
                 groupSenderName: resolvedName,
                 replyToId: (decoded['replyTo']?['id'] as String?),
                 replyText: (decoded['replyTo']?['text'] as String?) ?? '',
-                replyType:
-                    (decoded['replyTo']?['type'] as String?) ?? 'text',
+                replyType: (decoded['replyTo']?['type'] as String?) ?? 'text',
                 replyIsMe: decoded['replyTo']?['isMe'] as bool?,
               ),
             );
 
             // ACK the group packet.
-            channel.sink.add(jsonEncode({
-              'action': 'ack_group',
-              'packetId': packetId,
-              'groupId': groupId,
-            }));
+            channel.sink.add(
+              jsonEncode({
+                'action': 'ack_group',
+                'packetId': packetId,
+                'groupId': groupId,
+              }),
+            );
 
             if (!completer.isCompleted) {
-              completer.complete('$resolvedName: ${text.isEmpty ? '📎 $type' : text}');
+              completer.complete(
+                '$resolvedName: ${text.isEmpty ? '📎 $type' : text}',
+              );
             }
           } catch (e) {
             debugPrint('[AirChat][bg] group decrypt/persist failed: $e');
@@ -628,5 +650,6 @@ Future<String?> _fetchGroupMessage(RemoteMessage message) async {
     '[AirChat][bg] group fetch result: ${result != null ? 'got text' : 'timeout'}',
   );
   // Fallback: show sender name even if decryption failed.
-  return result ?? (senderName.isNotEmpty ? '$senderName sent a message' : null);
+  return result ??
+      (senderName.isNotEmpty ? '$senderName sent a message' : null);
 }

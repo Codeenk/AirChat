@@ -190,7 +190,9 @@ class WebSocketTunnelClient {
     try {
       final signature = await signChallenge?.call(nonce);
       if (signature == null || signature.isEmpty) return;
-      _channel?.sink.add(jsonEncode({'action': 'auth', 'signature': signature}));
+      _channel?.sink.add(
+        jsonEncode({'action': 'auth', 'signature': signature}),
+      );
     } catch (_) {}
   }
 
@@ -258,11 +260,13 @@ class WebSocketTunnelClient {
   /// Acks a group packet — tells the relay to delete the cached copy.
   void ackGroupPacket({required String packetId, required String groupId}) {
     if (_state != TunnelState.connected) return;
-    _channel?.sink.add(jsonEncode({
-      'action': 'ack_group',
-      'packetId': packetId,
-      'groupId': groupId,
-    }));
+    _channel?.sink.add(
+      jsonEncode({
+        'action': 'ack_group',
+        'packetId': packetId,
+        'groupId': groupId,
+      }),
+    );
   }
 
   void sendAck({required String packetId, required String senderUid}) {

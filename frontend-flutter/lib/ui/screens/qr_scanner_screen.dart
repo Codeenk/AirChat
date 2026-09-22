@@ -335,9 +335,10 @@ class _QrScannerScreenState extends State<QrScannerScreen>
     return Stack(
       children: [
         if (controller != null)
+          // Detection comes from `controller.barcodes` (cached below) — passing
+          // onDetect too would process every barcode twice.
           MobileScanner(
             controller: controller,
-            onDetect: _onDetect,
             fit: BoxFit.cover,
             errorBuilder: (context, error) {
               return _buildScannerError(error);

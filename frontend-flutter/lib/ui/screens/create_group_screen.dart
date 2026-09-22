@@ -106,38 +106,56 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                   ),
                 ),
                 Expanded(
-                  child: ListView.builder(
-                    itemCount: _contacts.length,
-                    itemBuilder: (_, i) {
-                      final c = _contacts[i];
-                      final sel = _selected.contains(c.uid);
-                      return CheckboxListTile(
-                        value: sel,
-                        onChanged: (v) => setState(
-                          () => v!
-                              ? _selected.add(c.uid)
-                              : _selected.remove(c.uid),
-                        ),
-                        title: Text(
-                          c.username,
-                          style: const TextStyle(color: AirColors.textPrimary),
-                        ),
-                        secondary: CircleAvatar(
-                          backgroundColor: AirColors.surfaceLight,
-                          child: Text(
-                            c.username.isNotEmpty
-                                ? c.username[0].toUpperCase()
-                                : '?',
-                            style: const TextStyle(
-                              color: AirColors.textPrimary,
+                  child: _contacts.isEmpty
+                      ? const Center(
+                          child: Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 32),
+                            child: Text(
+                              "No contacts yet.\nScan a peer's QR code first, "
+                              "then create a group.",
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: AirColors.textSecondary,
+                                fontSize: 13,
+                                height: 1.4,
+                              ),
                             ),
                           ),
+                        )
+                      : ListView.builder(
+                          itemCount: _contacts.length,
+                          itemBuilder: (_, i) {
+                            final c = _contacts[i];
+                            final sel = _selected.contains(c.uid);
+                            return CheckboxListTile(
+                              value: sel,
+                              onChanged: (v) => setState(
+                                () => v!
+                                    ? _selected.add(c.uid)
+                                    : _selected.remove(c.uid),
+                              ),
+                              title: Text(
+                                c.username,
+                                style: const TextStyle(
+                                  color: AirColors.textPrimary,
+                                ),
+                              ),
+                              secondary: CircleAvatar(
+                                backgroundColor: AirColors.surfaceLight,
+                                child: Text(
+                                  c.username.isNotEmpty
+                                      ? c.username[0].toUpperCase()
+                                      : '?',
+                                  style: const TextStyle(
+                                    color: AirColors.textPrimary,
+                                  ),
+                                ),
+                              ),
+                              activeColor: AirColors.accent,
+                              checkColor: AirColors.background,
+                            );
+                          },
                         ),
-                        activeColor: AirColors.accent,
-                        checkColor: AirColors.background,
-                      );
-                    },
-                  ),
                 ),
                 SafeArea(
                   child: Padding(

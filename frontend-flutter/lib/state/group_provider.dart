@@ -165,15 +165,25 @@ class GroupActions {
   /// for group_packet sends.
   Future<void> _registerGroupWithServer(Group group) async {
     try {
+      final myUid = await KeyStore.getUid();
+      final signingKp = await KeyStore.getSigningKeyPair();
+      if (myUid == null || myUid.isEmpty || signingKp == null) return;
+      // Signed so nobody can inject members into a group they don't own.
+      final signature = await SigningEngine().signHex(
+        'group_register|$myUid|${group.id}|${group.memberUids.join(',')}',
+        signingKp,
+      );
       final uri = Uri.parse('${ApiClient.defaultBaseUrl}/api/group/register');
       await http
           .post(
             uri,
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
+              'uid': myUid,
               'groupId': group.id,
               'groupName': group.name,
               'memberUids': group.memberUids,
+              'signature': signature,
             }),
           )
           .timeout(const Duration(seconds: 10));
@@ -275,8 +285,7 @@ final groupRekeyWatcherProvider = Provider((ref) {
       final chatId = event.chatId!;
       try {
         final myUid = await KeyStore.getUid() ?? '';
-        final group =
-            await ref.read(groupDaoProvider).getGroupById(chatId);
+        final group = await ref.read(groupDaoProvider).getGroupById(chatId);
         if (group == null || myUid.isEmpty) return;
         if (!group.memberUids.contains(myUid)) return;
         final sorted = [...group.memberUids]..sort();

@@ -1,7 +1,12 @@
 import { ConnectionRelay } from "./durable-objects/ConnectionRelay";
-import { handleRegister, handleUpdateFcmToken } from "./routes/auth";
+import {
+  handleRegister,
+  handleUpdateFcmToken,
+  handleTestPush,
+} from "./routes/auth";
 import { handleLookup } from "./routes/directory";
 import { handleMediaUpload, handleMediaDownload } from "./routes/media";
+import { verifyWithStoredKey } from "./utils/crypto-verify";
 
 export { ConnectionRelay };
 
@@ -100,64 +105,37 @@ export default {
   }
 };
 
-// Notification self-test handler: pushes type=self_test to the caller's own
-// FCM token. The client confirms receipt locally (never through this API —
-// the round-trip is device → FCM → device).
-async function handleTestPush(request: any, env: any): Promise<Response> {
-  try {
-    const body = (await request.json()) as { uid?: string };
-    const uid = body.uid;
-    if (!uid) {
-      return new Response(JSON.stringify({ error: "Missing uid" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-    const row: { fcm_token: string | null } | null = await env.DB.prepare(
-      "SELECT fcm_token FROM users WHERE uid = ?"
-    )
-      .bind(uid)
-      .first();
-    const fcmToken = row?.fcm_token;
-    if (!fcmToken) {
-      return new Response(JSON.stringify({ error: "No push token registered" }), {
-        status: 404,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-    const ok = await sendTestPush(env, fcmToken);
-    return new Response(JSON.stringify({ sent: ok }), {
-      status: ok ? 200 : 502,
-      headers: { "Content-Type": "application/json" },
-    });
-  } catch {
-    return new Response(JSON.stringify({ error: "Test push failed" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-}
-
-import { sendSilentWake } from "./utils/fcm";
-
-async function sendTestPush(env: any, fcmToken: string): Promise<boolean> {
-  // Reuses the wake sender with a fixed uid so the client can identify it.
-  return sendSilentWake(env, fcmToken, "self_test");
-}
-
 // Register group membership in D1 — the relay uses this to know which
 // members to wake for group_packet sends. Called by the group creator
 // whenever the group is created, members are added, or a member leaves.
+//
+// Signed as `group_register|<uid>|<groupId>|<members>` so a third party
+// cannot inject arbitrary members into a group they are not part of.
 async function handleRegisterGroup(request: any, env: Env): Promise<Response> {
   try {
     const body = (await request.json()) as {
+      uid?: string;
       groupId?: string;
       groupName?: string;
       memberUids?: string[];
+      signature?: string;
     };
-    if (!body.groupId || !Array.isArray(body.memberUids) || body.memberUids.length === 0) {
-      return new Response(JSON.stringify({ error: "Missing groupId or memberUids" }), {
+    if (!body.uid || !body.groupId || !Array.isArray(body.memberUids) || body.memberUids.length === 0) {
+      return new Response(JSON.stringify({ error: "Missing uid, groupId or memberUids" }), {
         status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const signatureOk = await verifyWithStoredKey(
+      env.DB,
+      body.uid,
+      `group_register|${body.uid}|${body.groupId}|${body.memberUids.join(",")}`,
+      body.signature,
+    );
+    if (!signatureOk) {
+      return new Response(JSON.stringify({ error: "Invalid or missing signature" }), {
+        status: 403,
         headers: { "Content-Type": "application/json" },
       });
     }

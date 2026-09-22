@@ -4,6 +4,7 @@ import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:uuid/uuid.dart';
 
 import 'core/crash/crash_reporter.dart';
@@ -14,6 +15,7 @@ import 'core/database/daos/contact_dao.dart';
 import 'core/database/daos/message_dao.dart';
 import 'core/network/api_client.dart';
 import 'core/network/notification_service.dart';
+import 'core/network/push_service.dart';
 import 'core/network/websocket_client.dart';
 import 'core/theme/colors.dart';
 import 'state/connection_provider.dart';
@@ -46,9 +48,20 @@ void main() async {
 
       final container = ProviderContainer();
 
+      // Bring Firebase up, then register the FCM background handler BEFORE
+      // runApp — the killed-state background isolate depends on this being
+      // registered during startup. Both steps are best-effort: a device
+      // without Firebase config still gets a fully working app (WS + DB).
+      try {
+        await container.read(firebaseInitializerProvider.future);
+      } catch (_) {}
+      registerFirebaseBackgroundHandler();
+
       final uid = await _loadLocalIdentity(container);
 
       runApp(ProviderScope(parent: container, child: const AirChatApp()));
+
+      unawaited(_preloadFonts());
 
       unawaited(
         _initializeServices(container, uid).catchError((e, s) {
@@ -70,6 +83,14 @@ void main() async {
   );
 }
 
+/// Warm the display font so the wordmark renders without a visible swap on
+/// first launch. Best-effort: offline simply falls back to the platform font.
+Future<void> _preloadFonts() async {
+  try {
+    await GoogleFonts.pendingFonts([GoogleFonts.dancingScript()]);
+  } catch (_) {}
+}
+
 Future<String> _loadLocalIdentity(ProviderContainer container) async {
   final uid = await KeyStore.getUid();
 
@@ -89,7 +110,7 @@ Future<String> _loadLocalIdentity(ProviderContainer container) async {
 
     final identityPublicKey = await engine.exportPublicKey(keyPair);
     final signingSignature = await signingEngine.signHex(
-      identityPublicKey,
+      'register|$newUid|$identityPublicKey',
       signingKeyPair,
     );
 
@@ -117,16 +138,10 @@ Future<String> _loadLocalIdentity(ProviderContainer container) async {
       await KeyStore.saveSigningKeyPair(signingKeyPair);
       final pubKey = await KeyStore.getPublicKey() ?? '';
       if (pubKey.isNotEmpty) {
-        final signingPublicKeyHex =
-            await signingEngine.exportSigningPublicKeyHex(signingKeyPair);
-        final signingSignature =
-            await signingEngine.signHex(pubKey, signingKeyPair);
         await const ApiClient().registerIdentity(
           uid: uid,
           username: await KeyStore.getUsername() ?? '',
           identityPublicKey: pubKey,
-          signingPublicKey: signingPublicKeyHex,
-          signingSignature: signingSignature,
         );
       }
     }
@@ -143,23 +158,9 @@ Future<void> _initializeServices(
 ) async {
   if (uid.isEmpty) return;
 
-  try {
-    await container.read(firebaseInitializerProvider.future);
-    final pushService = container.read(pushServiceProvider);
-    await pushService.initialize();
-  } catch (_) {}
-
-  container.read(messageRouterProvider(uid));
-  // Group re-key watcher: rotates group keys when kicks are observed.
-  container.read(groupRekeyWatcherProvider);
-
-  unawaited(
-    Future.delayed(
-      const Duration(seconds: 2),
-      () => _requeuePending(container, uid),
-    ),
-  );
-
+  // 1. Ensure this identity exists in the directory FIRST — the signed
+  //    fcm-token update below is a no-op until the user row exists, and WS
+  //    auth needs the signing key on file.
   try {
     final pubKey = await KeyStore.getPublicKey() ?? '';
     if (pubKey.isNotEmpty) {
@@ -169,22 +170,47 @@ Future<void> _initializeServices(
           uid: uid,
           username: await KeyStore.getUsername() ?? '',
           identityPublicKey: pubKey,
-          signingPublicKey: await KeyStore.getSigningPublicKey(),
-          signingSignature: await KeyStore.getSigningSignature(),
         );
         if (ok) break;
         await Future.delayed(Duration(seconds: 2 * attempt));
       }
     }
   } catch (_) {}
+
+  // 2. Local notification support must work even when Firebase/push config is
+  //    missing, so set it up independently of the FCM path below.
+  try {
+    await NotificationService.instance.initialize();
+  } catch (_) {}
+
+  try {
+    await container.read(firebaseInitializerProvider.future);
+    final pushService = container.read(pushServiceProvider);
+    await pushService.initialize();
+  } catch (_) {}
+
+  // 3. Start the wire + group re-key watcher.
+  container.read(messageRouterProvider(uid));
+  container.read(groupRekeyWatcherProvider);
+
+  unawaited(
+    Future.delayed(
+      const Duration(seconds: 2),
+      () => _requeuePending(container, uid),
+    ),
+  );
 }
 
+/// Re-sends messages that were composed but never acknowledged, preserving
+/// every field (media keys, replies) and re-signing so the recipient can
+/// still verify authenticity.
 Future<void> _requeuePending(ProviderContainer container, String uid) async {
   try {
     final pending = await MessageDao().getPendingMessages();
     if (pending.isEmpty) return;
     final keyPair = await KeyStore.getKeyPair();
     if (keyPair == null) return;
+    final signingKeyPair = await KeyStore.getSigningKeyPair();
     final engine = SodiumEngine();
     for (final msg in pending) {
       final contact = await ContactDao().getContactByUid(msg.recipientUid);
@@ -197,6 +223,16 @@ Future<void> _requeuePending(ProviderContainer container, String uid) async {
       }
       try {
         final recipientPub = await engine.importPublicKey(pubKey);
+        final chatId = ([uid, msg.recipientUid]..sort()).join('_');
+        String sig = '';
+        if (signingKeyPair != null) {
+          try {
+            sig = await SigningEngine().signHex(
+              '${msg.id}|${msg.text}|$chatId',
+              signingKeyPair,
+            );
+          } catch (_) {}
+        }
         // Preserve ALL fields — a bare {text,type} resend would corrupt
         // media messages (missing keys) and replies (missing quote).
         final payload = await engine.encryptMessage(
@@ -206,6 +242,7 @@ Future<void> _requeuePending(ProviderContainer container, String uid) async {
             if (msg.mediaKey != null) 'mediaKey': msg.mediaKey,
             if (msg.secretKeyHex != null) 'secretKeyHex': msg.secretKeyHex,
             if (msg.nonceHex != null) 'nonceHex': msg.nonceHex,
+            if (sig.isNotEmpty) 'sig': sig,
             if (msg.hasReply)
               'replyTo': {
                 'id': msg.replyToId,
@@ -265,6 +302,10 @@ class _AirChatAppState extends ConsumerState<AirChatApp>
     NotificationService.isAppForeground = state == AppLifecycleState.resumed;
     if (state == AppLifecycleState.resumed) {
       NotificationService.instance.clearAll();
+    } else {
+      // No chat can be "open" while the app is backgrounded — otherwise
+      // incoming messages would be treated as read and never badge.
+      MessageRouter.openChatId = null;
     }
   }
 

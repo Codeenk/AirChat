@@ -22,6 +22,7 @@ import '../../core/theme/colors.dart';
 import '../../models/message_payload.dart';
 import '../../state/chat_provider.dart';
 import '../../state/connection_provider.dart';
+import '../../state/refresh_bus.dart';
 import '../widgets/attachment_bottom_sheet.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/send_button.dart';
@@ -86,9 +87,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
     if (max - pixels < 200) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_scrollController.hasClients) {
-          _scrollController.jumpTo(
-            _scrollController.position.maxScrollExtent,
-          );
+          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
         }
       });
     }
@@ -113,7 +112,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
       final chatId = buildChatId(_myUid!, widget.contactUid);
       final beforeMax = _scrollController.position.maxScrollExtent;
       final beforePixels = _scrollController.position.pixels;
-      ref.read(activeChatMessagesProvider(chatId).notifier).loadMore().then((_) {
+      ref.read(activeChatMessagesProvider(chatId).notifier).loadMore().then((
+        _,
+      ) {
         if (_scrollController.hasClients) {
           final afterMax = _scrollController.position.maxScrollExtent;
           _scrollController.jumpTo(afterMax - beforeMax + beforePixels);
@@ -144,8 +145,10 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
   /// Removes keys for messages that are far from the current scroll position.
   void _evictStaleKeys() {
     if (_messageKeys.length <= _maxMessageKeys) return;
+    final uid = _myUid;
+    if (uid == null) return;
     final messages = ref.read(
-      activeChatMessagesProvider(buildChatId(_myUid!, widget.contactUid)),
+      activeChatMessagesProvider(buildChatId(uid, widget.contactUid)),
     );
     final visibleIds = messages.take(200).map((m) => m.id).toSet();
     _messageKeys.keys
@@ -156,7 +159,8 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
 
   Future<void> _initAsync() async {
     final uid = await KeyStore.getUid();
-    if (uid != null) {
+    if (!mounted || uid == null) return;
+    {
       setState(() => _myUid = uid);
       final chatId = buildChatId(uid, widget.contactUid);
       MessageRouter.openChatId = chatId;
@@ -208,7 +212,14 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
         ),
       );
     }
-    if (mounted) ref.invalidate(activeChatMessagesProvider(chatId));
+    if (mounted) {
+      ref
+          .read(activeChatMessagesProvider(chatId).notifier)
+          .removeLocalMessage(snapshot.id);
+      ref
+          .read(refreshBusProvider)
+          .fire(RefreshEvent(type: 'messages', chatId: chatId));
+    }
     if (!mounted) return;
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
@@ -235,7 +246,13 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
                 lastMessageTime: ts,
               ),
             );
-            if (mounted) ref.invalidate(activeChatMessagesProvider(chatId));
+            if (mounted) {
+              // Fires a targeted event so the restored row is appended and
+              // the home preview refreshes.
+              ref
+                  .read(refreshBusProvider)
+                  .fire(RefreshEvent(type: 'messages', chatId: chatId));
+            }
           },
         ),
         duration: const Duration(seconds: 5),
@@ -302,13 +319,16 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
         // One more frame to ensure layout settled, then animate if needed.
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (_scrollController.hasClients) {
-            _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+            _scrollController.jumpTo(
+              _scrollController.position.maxScrollExtent,
+            );
           }
         });
       } else {
         // Only auto-scroll if already near bottom (within 120px) to avoid
         // yanking the user away from history they are reading.
-        final nearBottom = _scrollController.position.maxScrollExtent -
+        final nearBottom =
+            _scrollController.position.maxScrollExtent -
                 _scrollController.position.pixels <
             120;
         if (nearBottom) {
@@ -625,102 +645,104 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
                     },
                     child: ListView.builder(
                       controller: _scrollController,
-                    cacheExtent: 300,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 12,
-                    ),
-                    itemCount: messages.length,
-                    itemBuilder: (context, index) {
-                      final msg = messages[index];
-                      final showDateDivider =
-                          index == 0 ||
-                          !_isSameDay(
-                            messages[index - 1].timestamp,
-                            msg.timestamp,
-                          );
-                      // O(1) lookup: _messageIds is built once per list build
-                      // (was messages.any → O(n²) per rebuild, janked scroll).
-                      final effectiveReplyText =
-                          msg.hasReply &&
-                              !_messageIds.contains(msg.replyToId)
-                          ? 'Message deleted'
-                          : msg.replyText;
-                      final msgKey = _messageKeys.putIfAbsent(
-                        msg.id,
-                        () => GlobalKey(),
-                      );
-                      return Column(
-                        children: [
-                          if (showDateDivider)
-                            Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                              child: Container(
+                      cacheExtent: 300,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 12,
+                      ),
+                      itemCount: messages.length,
+                      itemBuilder: (context, index) {
+                        final msg = messages[index];
+                        final showDateDivider =
+                            index == 0 ||
+                            !_isSameDay(
+                              messages[index - 1].timestamp,
+                              msg.timestamp,
+                            );
+                        // O(1) lookup: _messageIds is built once per list build
+                        // (was messages.any → O(n²) per rebuild, janked scroll).
+                        final effectiveReplyText =
+                            msg.hasReply && !_messageIds.contains(msg.replyToId)
+                            ? 'Message deleted'
+                            : msg.replyText;
+                        final msgKey = _messageKeys.putIfAbsent(
+                          msg.id,
+                          () => GlobalKey(),
+                        );
+                        return Column(
+                          children: [
+                            if (showDateDivider)
+                              Padding(
                                 padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 4,
+                                  vertical: 10,
                                 ),
-                                decoration: BoxDecoration(
-                                  color: AirColors.surfaceLight,
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: Text(
-                                  _dateLabel(msg.timestamp),
-                                  style: const TextStyle(
-                                    color: AirColors.textSecondary,
-                                    fontSize: 11,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: AirColors.surfaceLight,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Text(
+                                    _dateLabel(msg.timestamp),
+                                    style: const TextStyle(
+                                      color: AirColors.textSecondary,
+                                      fontSize: 11,
+                                    ),
                                   ),
                                 ),
                               ),
+                            Container(
+                              key: ValueKey('slot_${msg.id}'),
+                              child: ChatBubble(
+                                key: msgKey,
+                                text: msg.text,
+                                isMe: msg.isMe,
+                                timestamp: msg.timestamp,
+                                status: msg.status,
+                                type: msg.type,
+                                mediaKey: msg.mediaKey,
+                                secretKeyHex: msg.secretKeyHex,
+                                nonceHex: msg.nonceHex,
+                                backendUrl: ApiClient.defaultBaseUrl,
+                                peerName: widget.contactName,
+                                replyToId: msg.replyToId,
+                                replyText: effectiveReplyText,
+                                replyType:
+                                    effectiveReplyText == 'Message deleted'
+                                    ? 'text'
+                                    : msg.replyType,
+                                replyIsMe: msg.replyIsMe,
+                                highlighted: _highlightedMessageId == msg.id,
+                                onDeleteForMe: () => _deleteForMe(msg),
+                                onSwipeReply: () => _startReply(msg),
+                                onTapQuote: msg.hasReply
+                                    ? () => _jumpToMessage(msg.replyToId!)
+                                    : null,
+                                onRetryFailed:
+                                    msg.isMe &&
+                                        (msg.status == 'failed' ||
+                                            msg.status == 'expired')
+                                    ? () => ref
+                                          .read(
+                                            activeChatMessagesProvider(chatId)
+                                                .notifier,
+                                          )
+                                          .resendMessage(
+                                            msg,
+                                            recipientPublicKeyBase64:
+                                                widget.contactPublicKey,
+                                          )
+                                    : null,
+                              ),
                             ),
-                          Container(
-                            key: ValueKey('slot_${msg.id}'),
-                            child: ChatBubble(
-                              key: msgKey,
-                              text: msg.text,
-                              isMe: msg.isMe,
-                              timestamp: msg.timestamp,
-                              status: msg.status,
-                              type: msg.type,
-                              mediaKey: msg.mediaKey,
-                              secretKeyHex: msg.secretKeyHex,
-                              nonceHex: msg.nonceHex,
-                              backendUrl: ApiClient.defaultBaseUrl,
-                              peerName: widget.contactName,
-                              replyToId: msg.replyToId,
-                              replyText: effectiveReplyText,
-                              replyType: effectiveReplyText == 'Message deleted'
-                                  ? 'text'
-                                  : msg.replyType,
-                              replyIsMe: msg.replyIsMe,
-                              highlighted: _highlightedMessageId == msg.id,
-                              onDeleteForMe: () => _deleteForMe(msg),
-                              onSwipeReply: () => _startReply(msg),
-                              onTapQuote: msg.hasReply
-                                  ? () => _jumpToMessage(msg.replyToId!)
-                                  : null,
-                              onRetryFailed:
-                                  msg.isMe &&
-                                      (msg.status == 'failed' ||
-                                          msg.status == 'expired')
-                                  ? () => ref
-                                        .read(
-                                          activeChatMessagesProvider(chatId)
-                                              .notifier,
-                                        )
-                                        .resendMessage(
-                                          msg,
-                                          recipientPublicKeyBase64:
-                                              widget.contactPublicKey,
-                                        )
-                                  : null,
-                            ),
-                          ),
-                        ],
-                      );
-                    },
+                          ],
+                        );
+                      },
+                    ),
                   ),
-                ),
           ),
           if (_replyTo != null)
             ReplyPreviewBar(

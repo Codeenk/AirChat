@@ -46,8 +46,9 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
+      # Blocking: the repo is dart-formatted, so any drift should fail the build.
       - name: Verify formatting
-        run: dart format --output=none --set-exit-if-changed lib || echo "::warning::Unformatted files detected"
+        run: dart format --output=none --set-exit-if-changed lib test
 
       - name: Analyze
         run: flutter analyze --no-pub --no-fatal-infos
@@ -90,11 +91,19 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
-      - name: Decode signing keystore
+      # If no keystore secret is configured this is a dev build: skip the signing
+      # config entirely so Gradle falls back to debug signing (an empty/garbage
+      # .jks would otherwise fail the build with a confusing error).
+      - name: Configure release signing (if keystore provided)
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app-release-key.jks || echo "" > android/app-release-key.jks
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::warning::ANDROID_KEYSTORE_BASE64 not set — building with debug signing."
+            exit 0
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app-release-key.jks
           cat > android/key.properties << PROPS
           storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           keyPassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}

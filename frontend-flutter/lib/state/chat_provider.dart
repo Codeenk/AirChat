@@ -6,6 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 import '../core/crypto/key_store.dart';
+import '../core/crypto/signing_engine.dart';
+import '../core/database/daos/message_dao.dart';
 import '../models/chat_thread.dart';
 import '../models/message_payload.dart';
 import 'connection_provider.dart';
@@ -41,9 +43,10 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
 
   void _onRefreshEvent(RefreshEvent event) {
     if (event.type == 'messages') {
-      // New message(s) stored — reload if for this chat (null = any chat).
+      // Only react to events for THIS chat. Null chatId = a global event
+      // (e.g. contact rename) which must not trigger a history reload.
       if (event.chatId == null || event.chatId == activeChatId) {
-        _reloadMessages();
+        _syncMessages();
       }
     } else if (event.type == 'status' && event.messageId != null) {
       // Patch status in-place — instant tick update, then persist.
@@ -82,21 +85,44 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     state = messages;
   }
 
-  /// On new message events: reload the latest page (preserves scroll position
-  /// if user is near the bottom).
-  Future<void> _reloadMessages() async {
-    final messageDao = ref.read(messageDaoProvider);
-    final totalCount = await messageDao.getMessageCount(activeChatId);
-    _offset = (totalCount - _pageSize).clamp(0, totalCount);
-    _hasMore = _offset > 0;
+  /// Merges the newest page into existing state by id (a union, never a
+  /// replace). The old implementation replaced `state` with the last 50 rows,
+  /// discarding every older page the user had scrolled back to; merging also
+  /// picks up out-of-order arrivals (e.g. a flushed queued message).
+  Future<void> _syncMessages() async {
+    if (state.isEmpty) return _loadInitialMessages();
 
-    final messages = await messageDao.getMessagesForChat(
+    final messageDao = ref.read(messageDaoProvider);
+    final total = await messageDao.getMessageCount(activeChatId);
+    final offset = (total - _pageSize).clamp(0, total);
+    final latest = await messageDao.getMessagesForChat(
       activeChatId,
       limit: _pageSize,
-      offset: _offset,
+      offset: offset,
     );
+    if (!mounted || latest.isEmpty) return;
+
+    final byId = {for (final m in state) m.id: m};
+    var changed = false;
+    for (final m in latest) {
+      if (!byId.containsKey(m.id)) {
+        byId[m.id] = m;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+
+    final merged = byId.values.toList()
+      ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    state = merged;
+  }
+
+  /// Removes a single message from local state without re-reading the page
+  /// (a full invalidate would reset pagination and jump the scroll position).
+  void removeLocalMessage(String id) {
     if (!mounted) return;
-    state = messages;
+    final updated = state.where((m) => m.id != id).toList();
+    if (updated.length != state.length) state = updated;
   }
 
   /// Load older messages when user scrolls to top.
@@ -114,23 +140,29 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     if (!mounted) return;
     _offset = offset;
     _hasMore = _offset > 0;
-    state = [...older, ...state];
+    final existingIds = state.map((m) => m.id).toSet();
+    final fresh = older.where((m) => !existingIds.contains(m.id)).toList();
+    if (fresh.isEmpty) return;
+    state = [...fresh, ...state];
   }
 
   /// If no server ack (relayed/queued) arrives in time, surface the failure
   /// instead of leaving a clock icon forever. Tap-to-retry supported.
   void _scheduleSendTimeout(String packetId) {
     Timer(_sendAckTimeout, () async {
+      // Persist via the DAO directly: the notifier (and its `ref`) may have
+      // been disposed while a chat was closed, but the DB row must still stop
+      // claiming to be 'sending'.
+      final stored = await MessageDao().getMessageById(packetId);
+      if (stored == null || stored.status != 'sending') return;
+      await MessageDao().updateMessageStatus(packetId, 'failed');
+
+      if (!mounted) return;
       final idx = state.indexWhere((m) => m.id == packetId);
       if (idx == -1) return;
-      if (state[idx].status != 'sending') return; // acked meanwhile
-
       final updated = [...state];
       updated[idx] = updated[idx].copyWith(status: 'failed');
       state = updated;
-      await ref
-          .read(messageDaoProvider)
-          .updateMessageStatus(packetId, 'failed');
     });
   }
 
@@ -156,7 +188,7 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
         updated.add(m);
       }
     }
-    if (changed) state = updated;
+    if (changed && mounted) state = updated;
   }
 
   /// Re-attempt delivery of a failed message (same id → replaces DB row).
@@ -178,6 +210,8 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
 
     try {
       final encryptedPayload = await _encryptMessagePayload(
+        packetId: msg.id,
+        chatId: activeChatId,
         text: msg.text,
         type: msg.type,
         mediaKey: msg.mediaKey,
@@ -198,6 +232,8 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
   }
 
   Future<String> _encryptMessagePayload({
+    required String packetId,
+    required String chatId,
     required String text,
     required String type,
     String? mediaKey,
@@ -212,12 +248,26 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
       recipientPublicKeyBase64,
     );
 
+    // Sign the payload so the recipient can prove it came from us and not
+    // from a compromised/curious relay. Missing key = unsigned (compat).
+    String sig = '';
+    try {
+      final signingKp = await KeyStore.getSigningKeyPair();
+      if (signingKp != null) {
+        sig = await SigningEngine().signHex(
+          '$packetId|$text|$chatId',
+          signingKp,
+        );
+      }
+    } catch (_) {}
+
     final messageJson = jsonEncode({
       'text': text,
       'type': type,
       if (mediaKey != null) 'mediaKey': mediaKey,
       if (secretKeyHex != null) 'secretKeyHex': secretKeyHex,
       if (nonceHex != null) 'nonceHex': nonceHex,
+      if (sig.isNotEmpty) 'sig': sig,
       if (replyTo != null)
         'replyTo': {
           'id': replyTo.id,
@@ -263,6 +313,7 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     );
 
     await ref.read(messageDaoProvider).insertMessage(message);
+    if (!mounted) return;
     state = [...state, message];
 
     await ref
@@ -282,6 +333,8 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
         .fire(RefreshEvent(type: 'messages', chatId: activeChatId));
 
     final encryptedPayload = await _encryptMessagePayload(
+      packetId: packetId,
+      chatId: activeChatId,
       text: text,
       type: 'text',
       replyTo: replyTo,
@@ -333,6 +386,7 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     );
 
     await ref.read(messageDaoProvider).insertMessage(message);
+    if (!mounted) return;
     state = [...state, message];
 
     await ref
@@ -352,6 +406,8 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
         .fire(RefreshEvent(type: 'messages', chatId: activeChatId));
 
     final encryptedPayload = await _encryptMessagePayload(
+      packetId: packetId,
+      chatId: activeChatId,
       text: text,
       type: type,
       mediaKey: mediaKey,
@@ -372,11 +428,11 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
   }
 }
 
-final activeChatMessagesProvider =
-    StateNotifierProvider.family<ChatStateNotifier, List<ChatMessage>, String>((
-      ref,
-      chatId,
-    ) {
+/// Auto-disposed: a chat's state (and its bus subscription) must not outlive
+/// the screen that watches it. Previously every chat ever opened stayed alive,
+/// and each global message event re-queried all of them.
+final activeChatMessagesProvider = StateNotifierProvider.autoDispose
+    .family<ChatStateNotifier, List<ChatMessage>, String>((ref, chatId) {
       return ChatStateNotifier(ref, chatId);
     });
 

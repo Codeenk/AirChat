@@ -1,6 +1,8 @@
 import 'dart:convert';
 
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart'
+    show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/crash/crash_reporter.dart';
@@ -13,6 +15,7 @@ import '../core/database/daos/contact_dao.dart';
 import '../core/database/daos/message_dao.dart';
 import '../core/network/push_service.dart';
 import '../core/network/api_client.dart';
+import '../core/network/message_status.dart';
 import '../core/network/notification_service.dart';
 import '../core/network/websocket_client.dart';
 import '../models/chat_thread.dart';
@@ -31,14 +34,22 @@ final refreshBusProvider = Provider((ref) {
 });
 
 final firebaseInitializerProvider = FutureProvider((ref) async {
-  await Firebase.initializeApp(
-    options: const FirebaseOptions(
-      apiKey: 'AIzaSyBrybxVHpsFDe0wd6CQ7P4qpdxXsosnWc8',
-      appId: '1:933764476354:android:365fe94c303a466c9aba5b',
-      messagingSenderId: '933764476354',
-      projectId: 'airchat-messaging',
-    ),
-  );
+  // Idempotent: main() may have already brought Firebase up so the FCM
+  // background handler could be registered before runApp.
+  if (Firebase.apps.isNotEmpty) return null;
+  if (kIsWeb || defaultTargetPlatform == TargetPlatform.android) {
+    await Firebase.initializeApp(
+      options: const FirebaseOptions(
+        apiKey: 'AIzaSyBrybxVHpsFDe0wd6CQ7P4qpdxXsosnWc8',
+        appId: '1:933764476354:android:365fe94c303a466c9aba5b',
+        messagingSenderId: '933764476354',
+        projectId: 'airchat-messaging',
+      ),
+    );
+  } else {
+    // iOS/macOS: config comes from GoogleService-Info.plist in the bundle.
+    await Firebase.initializeApp();
+  }
   return null;
 });
 
@@ -120,10 +131,13 @@ class MessageRouter {
       } else if (type == 'packet_status') {
         final packetId = msg['packetId'] as String?;
         final status = msg['status'] as String?;
-        if (packetId != null && status != null) {
-          messageDao.updateMessageStatus(packetId, status);
+        // Map relay vocabulary (relayed/queued_ephemeral) to what the UI
+        // actually renders — never let it fall through to "read".
+        final mapped = status == null ? null : mapRelayStatus(status);
+        if (packetId != null && mapped != null) {
+          messageDao.updateMessageStatus(packetId, mapped);
           bus.fire(
-            RefreshEvent(type: 'status', messageId: packetId, status: status),
+            RefreshEvent(type: 'status', messageId: packetId, status: mapped),
           );
         }
       } else if (type == 'read_receipt') {
@@ -176,7 +190,8 @@ class MessageRouter {
     // Replay window: drop messages older than the 24h cache TTL (+1h skew)
     // or more than 5min in the future (clock games / replay injection).
     final now = DateTime.now().millisecondsSinceEpoch;
-    if (timestamp < now - 25 * 60 * 60 * 1000 || timestamp > now + 5 * 60 * 1000) {
+    if (timestamp < now - 25 * 60 * 60 * 1000 ||
+        timestamp > now + 5 * 60 * 1000) {
       CrashReporter.recordError(
         error: 'replay/out-of-window dropped from $senderUid',
         source: 'replay-guard',
@@ -275,7 +290,31 @@ class MessageRouter {
           return;
         }
       }
-      final chatId = (groupId != null && groupId.isNotEmpty) ? groupId : _chatId(uid, senderUid);
+      final chatId = (groupId != null && groupId.isNotEmpty)
+          ? groupId
+          : _chatId(uid, senderUid);
+
+      // Sender authenticity: verify the Ed25519 signature over
+      // `packetId|text|chatId`. A hostile relay knows every recipient's public
+      // key and could otherwise synthesize a ciphertext "from" any sender.
+      // Missing sig = legacy client (accepted during rollout); invalid = drop.
+      final directSig = decoded['sig'] as String?;
+      if (directSig != null && directSig.isNotEmpty) {
+        final directOk = await _verifyDirectSender(
+          senderUid: senderUid,
+          packetId: packetId,
+          text: text,
+          chatId: chatId,
+          signature: directSig,
+        );
+        if (!directOk) {
+          CrashReporter.recordError(
+            error: 'direct sig invalid from $senderUid',
+            source: 'direct-verify',
+          );
+          return;
+        }
+      }
 
       // Resolve contact name inline (fast, no network) — use fallback if unknown.
       final existing = await contactDao.getContactByUid(senderUid);
@@ -369,7 +408,8 @@ class MessageRouter {
     final encodedPayload = msg['payload'] as String? ?? '';
     final groupId = msg['groupId'] as String? ?? '';
     final senderNameFromRelay = msg['senderName'] as String? ?? '';
-    final timestamp = msg['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch;
+    final timestamp =
+        msg['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch;
 
     if (groupId.isEmpty || encodedPayload.isEmpty) return;
 
@@ -387,7 +427,8 @@ class MessageRouter {
     // Look up the local group and its symmetric groupKey.
     final localGroup = await GroupDao().getGroupById(groupId);
     if (localGroup == null) return; // group not known locally — ignore
-    if (!localGroup.memberUids.contains(senderUid)) return; // sender was removed
+    if (!localGroup.memberUids.contains(senderUid))
+      return; // sender was removed
     final groupKey = localGroup.groupKey;
     if (groupKey == null || groupKey.isEmpty) return; // no key available
 
@@ -423,7 +464,8 @@ class MessageRouter {
       }
 
       // Resolve sender name: prefer the name in the payload, then relay, then contact.
-      String contactName = decoded['senderName'] as String? ?? senderNameFromRelay;
+      String contactName =
+          decoded['senderName'] as String? ?? senderNameFromRelay;
       if (contactName.isEmpty) {
         final existing = await contactDao.getContactByUid(senderUid);
         if (existing != null && !_isFallbackName(existing.username)) {
@@ -470,6 +512,50 @@ class MessageRouter {
     } catch (e) {
       // Decryption failed or message already stored
     }
+  }
+
+  /// Verifies a 1:1 payload signature: Ed25519(packetId|text|chatId).
+  /// Fetches + caches the sender's signing key from the directory on demand.
+  Future<bool> _verifyDirectSender({
+    required String senderUid,
+    required String packetId,
+    required String text,
+    required String chatId,
+    required String? signature,
+  }) async {
+    if (signature == null || signature.isEmpty) return true;
+    try {
+      final signingKey = await _resolveSigningKey(senderUid);
+      if (signingKey == null || signingKey.isEmpty) return true;
+      return await SigningEngine().verifyHex(
+        message: '$packetId|$text|$chatId',
+        signatureHex: signature,
+        publicKeyHex: signingKey,
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Resolves (and caches into the contacts DB) a peer's Ed25519 signing key.
+  Future<String?> _resolveSigningKey(String senderUid) async {
+    final contact = await contactDao.getContactByUid(senderUid);
+    var signingKey = contact?.signingPublicKey;
+    if (signingKey != null && signingKey.isNotEmpty) return signingKey;
+    final info = await const ApiClient().lookupIdentity(uid: senderUid);
+    signingKey = info?['signing_public_key'] as String?;
+    if (signingKey != null && signingKey.isNotEmpty && contact != null) {
+      await contactDao.insertContact(
+        Contact(
+          uid: contact.uid,
+          username: contact.username,
+          identityPublicKey: contact.identityPublicKey,
+          signingPublicKey: signingKey,
+          createdAt: contact.createdAt,
+        ),
+      );
+    }
+    return signingKey;
   }
 
   /// Verifies a group payload signature: Ed25519(packetId|text|groupId).
@@ -574,7 +660,9 @@ class MessageRouter {
             createdAt: DateTime.now().millisecondsSinceEpoch,
           ),
         );
-        bus.fire(RefreshEvent(type: 'messages'));
+        // 'contacts' (not 'messages') so live chat notifiers don't all
+        // reload their history just because a name resolved.
+        bus.fire(RefreshEvent(type: 'contacts'));
       } else if (_isFallbackName(existing.username) ||
           (existing.signingPublicKey?.isEmpty ?? true)) {
         final info = await const ApiClient().lookupIdentity(uid: senderUid);
@@ -593,14 +681,13 @@ class MessageRouter {
                   ? realName
                   : existing.username,
               identityPublicKey: existing.identityPublicKey,
-              signingPublicKey:
-                  (signingKey != null && signingKey.isNotEmpty)
-                      ? signingKey
-                      : existing.signingPublicKey,
+              signingPublicKey: (signingKey != null && signingKey.isNotEmpty)
+                  ? signingKey
+                  : existing.signingPublicKey,
               createdAt: existing.createdAt,
             ),
           );
-          bus.fire(RefreshEvent(type: 'messages'));
+          bus.fire(RefreshEvent(type: 'contacts'));
         }
       }
     } catch (_) {}

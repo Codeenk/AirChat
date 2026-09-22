@@ -33,10 +33,7 @@ class SigningEngine {
       final pubBytes = _hexToBytes(publicKeyHex);
       final publicKey = SimplePublicKey(pubBytes, type: KeyPairType.ed25519);
       final signature = Signature(sigBytes, publicKey: publicKey);
-      return await algorithm.verify(
-        utf8.encode(message),
-        signature: signature,
-      );
+      return await algorithm.verify(utf8.encode(message), signature: signature);
     } catch (_) {
       return false;
     }

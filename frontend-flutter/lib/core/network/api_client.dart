@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../crypto/key_store.dart';
+import '../crypto/signing_engine.dart';
 
 class ApiClient {
   static const String defaultBaseUrl =
@@ -11,16 +12,40 @@ class ApiClient {
 
   const ApiClient({this.baseUrl = defaultBaseUrl});
 
+  /// Signs [message] with this device's Ed25519 signing key. Returns null when
+  /// no signing identity exists yet (callers then fail closed).
+  Future<String?> _sign(String message) async {
+    try {
+      final kp = await KeyStore.getSigningKeyPair();
+      if (kp == null) return null;
+      return await SigningEngine().signHex(message, kp);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Registers/refreshes this identity. The signature is bound to the uid
+  /// (`register|uid|identityPublicKey`) so a third party who knows the uid
+  /// cannot re-register it with their own keys and hijack the relay session.
   Future<bool> registerIdentity({
     required String uid,
     required String username,
     required String identityPublicKey,
     String signedPrekey = "",
     String prekeySignature = "",
-    String? signingPublicKey,
-    String? signingSignature,
+    String? fcmToken,
   }) async {
     try {
+      final signingPublicKey = await KeyStore.getSigningPublicKey();
+      final signature = await _sign('register|$uid|$identityPublicKey');
+      if (signingPublicKey == null ||
+          signingPublicKey.isEmpty ||
+          signature == null ||
+          signature.isEmpty) {
+        // No signing identity → cannot prove ownership. Fail closed.
+        return false;
+      }
+
       final uri = Uri.parse("$baseUrl/api/identity/register");
       final response = await http
           .post(
@@ -32,10 +57,9 @@ class ApiClient {
               'identityPublicKey': identityPublicKey,
               'signedPrekey': signedPrekey,
               'prekeySignature': prekeySignature,
-              if (signingPublicKey != null)
-                'signingPublicKey': signingPublicKey,
-              if (signingSignature != null)
-                'signingSignature': signingSignature,
+              'signingPublicKey': signingPublicKey,
+              'signingSignature': signature,
+              if (fcmToken != null) 'fcmToken': fcmToken,
             }),
           )
           .timeout(const Duration(seconds: 10));
@@ -56,12 +80,14 @@ class ApiClient {
   /// Asks the relay to send a data-only self-test push to this device.
   Future<bool> requestTestPush({required String uid}) async {
     try {
+      final signature = await _sign('test_push|$uid');
+      if (signature == null || signature.isEmpty) return false;
       final uri = Uri.parse("$baseUrl/api/identity/test-push");
       final response = await http
           .post(
             uri,
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'uid': uid}),
+            body: jsonEncode({'uid': uid, 'signature': signature}),
           )
           .timeout(const Duration(seconds: 10));
       return response.statusCode == 200;
@@ -90,13 +116,19 @@ class ApiClient {
   Future<bool> sendFcmToken(String token) async {
     try {
       final uid = await _getStoredUid();
-      if (uid == null) return false;
+      if (uid == null || uid.isEmpty) return false;
+      final signature = await _sign('fcm_token|$uid|$token');
+      if (signature == null || signature.isEmpty) return false;
 
       final uri = Uri.parse("$baseUrl/api/identity/fcm-token");
       final response = await http.post(
         uri,
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'uid': uid, 'fcmToken': token}),
+        body: jsonEncode({
+          'uid': uid,
+          'fcmToken': token,
+          'signature': signature,
+        }),
       );
       return response.statusCode == 200;
     } catch (_) {

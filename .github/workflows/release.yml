@@ -58,6 +58,10 @@ jobs:
         working-directory: frontend-flutter
         run: flutter pub get
 
+      - name: Verify formatting
+        working-directory: frontend-flutter
+        run: dart format --output=none --set-exit-if-changed lib test
+
       - name: Analyze & Test
         working-directory: frontend-flutter
         run: |
@@ -76,6 +80,18 @@ jobs:
             exit 1
           fi
 
+      # A published release MUST be signed. Fail loudly instead of silently
+      # producing a debug-signed (non-installable-over-previous) APK.
+      - name: Validate signing secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ]; then
+            echo "::error::Missing ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD secrets. A release must be signed."
+            exit 1
+          fi
+
       - name: Decode signing keystore
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -87,6 +103,13 @@ jobs:
           keyAlias=airchat
           storeFile=app-release-key.jks
           PROPS
+
+      - name: Verify APK signing config is not the debug key
+        working-directory: frontend-flutter
+        run: |
+          test -f android/key.properties || { echo "::error::key.properties missing"; exit 1; }
+          test -s android/app-release-key.jks || { echo "::error::keystore is empty"; exit 1; }
+          grep -q '^storeFile=app-release-key.jks$' android/key.properties || { echo "::error::unexpected storeFile"; exit 1; }
 
       - name: Build release APKs (split-per-abi + obfuscated)
         working-directory: frontend-flutter

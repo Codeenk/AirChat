@@ -48,7 +48,12 @@ class Group {
     return [];
   }
 
-  Group copyWith({String? name, List<String>? memberUids, String? groupKey, int? unreadCount}) => Group(
+  Group copyWith({
+    String? name,
+    List<String>? memberUids,
+    String? groupKey,
+    int? unreadCount,
+  }) => Group(
     id: id,
     name: name ?? this.name,
     memberUids: memberUids ?? this.memberUids,

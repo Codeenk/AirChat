@@ -204,7 +204,9 @@ class AppDatabase {
     if (oldVersion < 6) {
       // v6: group unread badges (same pattern as chat_threads).
       try {
-        await db.execute('ALTER TABLE groups ADD COLUMN unread_count INTEGER DEFAULT 0');
+        await db.execute(
+          'ALTER TABLE groups ADD COLUMN unread_count INTEGER DEFAULT 0',
+        );
       } catch (e) {
         if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;
       }
@@ -212,7 +214,9 @@ class AppDatabase {
     if (oldVersion < 7) {
       // v7: sender signing keys for message/control verification.
       try {
-        await db.execute('ALTER TABLE contacts ADD COLUMN signing_public_key TEXT');
+        await db.execute(
+          'ALTER TABLE contacts ADD COLUMN signing_public_key TEXT',
+        );
       } catch (e) {
         if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;
       }
@@ -221,7 +225,9 @@ class AppDatabase {
       // v8: repair — v7 fresh installs created contacts without
       // signing_public_key (_onCreate gap). Idempotent.
       try {
-        await db.execute('ALTER TABLE contacts ADD COLUMN signing_public_key TEXT');
+        await db.execute(
+          'ALTER TABLE contacts ADD COLUMN signing_public_key TEXT',
+        );
       } catch (e) {
         if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;
       }

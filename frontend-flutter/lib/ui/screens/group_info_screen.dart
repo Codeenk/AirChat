@@ -143,7 +143,9 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen> {
     );
     if (ok != true) return;
     await ref.read(groupActionsProvider).leaveGroup(_group.id);
-    if (mounted) Navigator.pop(context);
+    // Leave the (now-deleted) group chat too — popping only this screen would
+    // strand the user on a chat for a group that no longer exists locally.
+    if (mounted) Navigator.popUntil(context, (r) => r.isFirst);
   }
 
   @override

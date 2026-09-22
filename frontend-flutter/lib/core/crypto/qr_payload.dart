@@ -30,7 +30,8 @@ class QrContactPayload {
       final start = text.indexOf('{');
       final end = text.lastIndexOf('}');
       if (start < 0 || end < 0 || end <= start) return null;
-      final map = jsonDecode(text.substring(start, end + 1)) as Map<String, dynamic>;
+      final map =
+          jsonDecode(text.substring(start, end + 1)) as Map<String, dynamic>;
       final uid = map['uid']?.toString() ?? '';
       final pk = map['pk']?.toString() ?? '';
       if (uid.isEmpty || pk.isEmpty) return null;

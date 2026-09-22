@@ -84,8 +84,6 @@ class _UsernameSettingsScreenState extends State<UsernameSettingsScreen> {
             uid: uid,
             username: value,
             identityPublicKey: pubKey,
-            signingPublicKey: await KeyStore.getSigningPublicKey(),
-            signingSignature: await KeyStore.getSigningSignature(),
           );
           if (!registered) {
             await Future.delayed(Duration(seconds: 2 * attempt));

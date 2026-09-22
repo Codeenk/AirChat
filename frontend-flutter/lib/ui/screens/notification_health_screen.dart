@@ -42,6 +42,7 @@ class _NotificationHealthScreenState extends State<NotificationHealthScreen> {
     final notifs = await Permission.notification.status;
     final manufacturer = await DeviceInfoHelper.manufacturer();
     final lastVerified = await _storage.read(key: 'airchat_last_push_verified');
+    final verifiedMs = lastVerified == null ? null : int.tryParse(lastVerified);
 
     if (!mounted) return;
     setState(() {
@@ -49,9 +50,9 @@ class _NotificationHealthScreenState extends State<NotificationHealthScreen> {
       _notificationsGranted = _notificationsGrantedCheck(notifs);
       _manufacturer = manufacturer;
       _oemTip = _oemTipFor(manufacturer);
-      _lastVerified = lastVerified == null
+      _lastVerified = verifiedMs == null
           ? null
-          : DateTime.fromMillisecondsSinceEpoch(int.parse(lastVerified));
+          : DateTime.fromMillisecondsSinceEpoch(verifiedMs);
     });
   }
 

@@ -70,9 +70,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
     if (max - pixels < 200) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_scrollController.hasClients) {
-          _scrollController.jumpTo(
-            _scrollController.position.maxScrollExtent,
-          );
+          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
         }
       });
     }
@@ -85,6 +83,8 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
     await GroupDao().resetUnread(widget.group.id);
   }
 
+  static const int _maxMessageKeys = 200;
+
   void _onScroll() {
     if (!_scrollController.hasClients || _myUid == null) return;
     final nearBottom =
@@ -95,13 +95,28 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
     if (_scrollController.position.pixels < 200) {
       final beforeMax = _scrollController.position.maxScrollExtent;
       final beforePixels = _scrollController.position.pixels;
-      ref.read(activeChatMessagesProvider(widget.group.id).notifier).loadMore().then((_) {
-        if (_scrollController.hasClients) {
-          final afterMax = _scrollController.position.maxScrollExtent;
-          _scrollController.jumpTo(afterMax - beforeMax + beforePixels);
-        }
-      });
+      ref
+          .read(activeChatMessagesProvider(widget.group.id).notifier)
+          .loadMore()
+          .then((_) {
+            if (_scrollController.hasClients) {
+              final afterMax = _scrollController.position.maxScrollExtent;
+              _scrollController.jumpTo(afterMax - beforeMax + beforePixels);
+            }
+          });
     }
+    _evictStaleKeys();
+  }
+
+  /// Cap the GlobalKey map so long-lived group chats don't grow unbounded.
+  void _evictStaleKeys() {
+    if (_messageKeys.length <= _maxMessageKeys) return;
+    final messages = ref.read(activeChatMessagesProvider(widget.group.id));
+    final visibleIds = messages.take(_maxMessageKeys).map((m) => m.id).toSet();
+    _messageKeys.keys
+        .where((id) => !visibleIds.contains(id))
+        .toList()
+        .forEach(_messageKeys.remove);
   }
 
   String _dateLabel(int ms) {
@@ -144,6 +159,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
     String? mediaKey,
     String? secretKeyHex,
     String? nonceHex,
+    ChatMessage? replyTo,
   }) async {
     if (_myUid == null) return;
     final myUid = _myUid!;
@@ -163,6 +179,8 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
     // Resolve sender display name for the notification.
     final senderName = await _resolveMyDisplayName(myUid);
 
+    // Capture the reply BEFORE any await — the caller clears `_replyTo`
+    // synchronously right after this call.
     final msg = ChatMessage(
       id: packetId,
       chatId: group.id,
@@ -175,28 +193,119 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
       nonceHex: nonceHex,
       timestamp: ts,
       isMe: true,
-      status: 'sent',
-      replyToId: _replyTo?.id,
-      replyText: _replyTo?.text ?? '',
-      replyType: _replyTo?.type ?? 'text',
-      replyIsMe: _replyTo?.isMe,
+      status: 'sending',
+      replyToId: replyTo?.id,
+      replyText: replyTo?.text ?? '',
+      replyType: replyTo?.type ?? 'text',
+      replyIsMe: replyTo?.isMe,
       groupId: group.id,
       groupSenderName: senderName,
     );
     await MessageDao().insertMessage(msg);
-    if (mounted) ref.invalidate(activeChatMessagesProvider(group.id));
+    // Targeted event: appends the new row + refreshes the home preview without
+    // re-reading the page (which would reset pagination and jump the scroll).
     ref
         .read(refreshBusProvider)
         .fire(RefreshEvent(type: 'messages', chatId: group.id));
 
-    // ─── GROUP IDENTITY: encrypt once with groupKey, send ONE packet ───
-    final groupKey = fresh.groupKey;
+    await _dispatchGroupPayload(
+      packetId: packetId,
+      text: text,
+      type: type,
+      mediaKey: mediaKey,
+      secretKeyHex: secretKeyHex,
+      nonceHex: nonceHex,
+      replyId: replyTo?.id,
+      replyText: replyTo?.text,
+      replyType: replyTo?.type,
+      replyIsMe: replyTo?.isMe,
+      group: fresh,
+      myUid: myUid,
+      senderName: senderName,
+    );
+    _scheduleGroupSendTimeout(packetId);
+  }
+
+  /// Retries a group message that never reached the relay.
+  Future<void> _resendGroupMessage(ChatMessage msg) async {
+    final groupId = msg.groupId ?? widget.group.id;
+    final group = await GroupDao().getGroupById(groupId);
+    if (group == null) return;
+    await MessageDao().updateMessageStatus(msg.id, 'sending');
+    ref
+        .read(refreshBusProvider)
+        .fire(
+          RefreshEvent(type: 'status', messageId: msg.id, status: 'sending'),
+        );
+    final senderName = await _resolveMyDisplayName(msg.senderUid);
+    await _dispatchGroupPayload(
+      packetId: msg.id,
+      text: msg.text,
+      type: msg.type,
+      mediaKey: msg.mediaKey,
+      secretKeyHex: msg.secretKeyHex,
+      nonceHex: msg.nonceHex,
+      replyId: msg.replyToId,
+      replyText: msg.replyText,
+      replyType: msg.replyType,
+      replyIsMe: msg.replyIsMe,
+      group: group,
+      myUid: msg.senderUid,
+      senderName: senderName,
+    );
+    _scheduleGroupSendTimeout(msg.id);
+  }
+
+  /// Marks a group message failed if the relay never acknowledges it.
+  void _scheduleGroupSendTimeout(String packetId) {
+    Timer(const Duration(seconds: 12), () async {
+      final stored = await MessageDao().getMessageById(packetId);
+      if (stored == null || stored.status != 'sending') return;
+      await MessageDao().updateMessageStatus(packetId, 'failed');
+      // The DB flip above is the source of truth; only the live UI patch
+      // needs a mounted screen.
+      if (!mounted) return;
+      ref
+          .read(refreshBusProvider)
+          .fire(
+            RefreshEvent(type: 'status', messageId: packetId, status: 'failed'),
+          );
+    });
+  }
+
+  /// Encrypts once with the shared group key and sends a single packet, or
+  /// falls back to per-member fan-out for legacy groups with no key.
+  Future<void> _dispatchGroupPayload({
+    required String packetId,
+    required String text,
+    required String type,
+    String? mediaKey,
+    String? secretKeyHex,
+    String? nonceHex,
+    String? replyId,
+    String? replyText,
+    String? replyType,
+    bool? replyIsMe,
+    required Group group,
+    required String myUid,
+    required String senderName,
+  }) async {
+    final groupKey = group.groupKey;
     if (groupKey == null || groupKey.isEmpty) {
       // Fallback: no groupKey yet (stale local record) — use legacy N-send.
       await _legacyFanOut(
-        text: text, type: type,
-        mediaKey: mediaKey, secretKeyHex: secretKeyHex, nonceHex: nonceHex,
-        group: fresh, myUid: myUid, packetId: packetId,
+        text: text,
+        type: type,
+        mediaKey: mediaKey,
+        secretKeyHex: secretKeyHex,
+        nonceHex: nonceHex,
+        replyId: replyId,
+        replyText: replyText,
+        replyType: replyType,
+        replyIsMe: replyIsMe,
+        group: group,
+        myUid: myUid,
+        packetId: packetId,
       );
       return;
     }
@@ -228,12 +337,12 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
       'senderUid': myUid,
       'senderName': senderName,
       if (msgSig.isNotEmpty) 'sig': msgSig,
-      if (_replyTo != null)
+      if (replyId != null)
         'replyTo': {
-          'id': _replyTo!.id,
-          'text': _replyTo!.text,
-          'type': _replyTo!.type,
-          'isMe': _replyTo!.isMe,
+          'id': replyId,
+          'text': replyText ?? '',
+          'type': replyType ?? 'text',
+          'isMe': replyIsMe,
         },
     });
 
@@ -242,20 +351,31 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
         plainText: payload,
         groupKeyBase64: groupKey,
       );
-      ref.read(websocketClientProvider(myUid)).sendGroupPacket(
-        groupId: group.id,
-        groupName: group.name,
-        encryptedPayload: enc.encode(),
-        packetId: packetId,
-        senderName: senderName,
-      );
+      ref
+          .read(websocketClientProvider(myUid))
+          .sendGroupPacket(
+            groupId: group.id,
+            groupName: group.name,
+            encryptedPayload: enc.encode(),
+            packetId: packetId,
+            senderName: senderName,
+          );
     } catch (e) {
       debugPrint('[AirChat] group send failed: $e');
       // Fallback to legacy N-send if symmetric encryption fails.
       await _legacyFanOut(
-        text: text, type: type,
-        mediaKey: mediaKey, secretKeyHex: secretKeyHex, nonceHex: nonceHex,
-        group: fresh, myUid: myUid, packetId: packetId,
+        text: text,
+        type: type,
+        mediaKey: mediaKey,
+        secretKeyHex: secretKeyHex,
+        nonceHex: nonceHex,
+        replyId: replyId,
+        replyText: replyText,
+        replyType: replyType,
+        replyIsMe: replyIsMe,
+        group: group,
+        myUid: myUid,
+        packetId: packetId,
       );
     }
   }
@@ -268,6 +388,10 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
     String? mediaKey,
     String? secretKeyHex,
     String? nonceHex,
+    String? replyId,
+    String? replyText,
+    String? replyType,
+    bool? replyIsMe,
     required Group group,
     required String myUid,
     required String packetId,
@@ -291,12 +415,12 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
           'groupId': group.id,
           'groupName': group.name,
           'senderUid': myUid,
-          if (_replyTo != null)
+          if (replyId != null)
             'replyTo': {
-              'id': _replyTo!.id,
-              'text': _replyTo!.text,
-              'type': _replyTo!.type,
-              'isMe': _replyTo!.isMe,
+              'id': replyId,
+              'text': replyText ?? '',
+              'type': replyType ?? 'text',
+              'isMe': replyIsMe,
             },
         });
         final enc = await engine.encryptMessage(
@@ -324,7 +448,8 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
     // 2. Fallback: look up in contacts DB.
     try {
       final contact = await ContactDao().getContactByUid(uid);
-      if (contact != null && contact.username.isNotEmpty) return contact.username;
+      if (contact != null && contact.username.isNotEmpty)
+        return contact.username;
     } catch (_) {}
     return 'You';
   }
@@ -332,7 +457,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
   void _sendMessage() {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
-    _fanOut(text: text, type: 'text');
+    _fanOut(text: text, type: 'text', replyTo: _replyTo);
     _textController.clear();
     setState(() => _replyTo = null);
     _scrollToBottom();
@@ -349,11 +474,16 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
         _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (_scrollController.hasClients) {
-            _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+            _scrollController.jumpTo(
+              _scrollController.position.maxScrollExtent,
+            );
           }
         });
       } else {
-        final nearBottom = _scrollController.position.maxScrollExtent - _scrollController.position.pixels < 120;
+        final nearBottom =
+            _scrollController.position.maxScrollExtent -
+                _scrollController.position.pixels <
+            120;
         if (nearBottom) {
           _scrollController.animateTo(
             _scrollController.position.maxScrollExtent,
@@ -372,6 +502,9 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
   }) async {
     if (_isMediaBusy) return;
     _isMediaBusy = true;
+    // Capture the reply now — the upload below can take seconds and the user
+    // may have dismissed the reply bar by then.
+    final pendingReply = _replyTo;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('Encrypting & uploading…'),
@@ -389,6 +522,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
         mediaKey: result.fileKey,
         secretKeyHex: result.secretKeyHex,
         nonceHex: result.nonceHex,
+        replyTo: pendingReply,
       );
       if (mounted) setState(() => _replyTo = null);
       _scrollToBottom();
@@ -670,89 +804,109 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
                     },
                     child: ListView.builder(
                       controller: _scrollController,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 12,
-                    ),
-                    itemCount: messages.length,
-                    itemBuilder: (_, index) {
-                      final msg = messages[index];
-                      final showDateDivider =
-                          index == 0 ||
-                          !_isSameDay(
-                            messages[index - 1].timestamp,
-                            msg.timestamp,
-                          );
-                      final effectiveReplyText =
-                          msg.hasReply &&
-                              !_messageIds.contains(msg.replyToId)
-                          ? 'Message deleted'
-                          : msg.replyText;
-                      final msgKey = _messageKeys.putIfAbsent(
-                        msg.id,
-                        () => GlobalKey(),
-                      );
-                      return Column(
-                        children: [
-                          if (showDateDivider)
-                            Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                              child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 12,
+                      ),
+                      itemCount: messages.length,
+                      itemBuilder: (_, index) {
+                        final msg = messages[index];
+                        final showDateDivider =
+                            index == 0 ||
+                            !_isSameDay(
+                              messages[index - 1].timestamp,
+                              msg.timestamp,
+                            );
+                        final effectiveReplyText =
+                            msg.hasReply && !_messageIds.contains(msg.replyToId)
+                            ? 'Message deleted'
+                            : msg.replyText;
+                        final msgKey = _messageKeys.putIfAbsent(
+                          msg.id,
+                          () => GlobalKey(),
+                        );
+                        return Column(
+                          children: [
+                            if (showDateDivider)
+                              Padding(
                                 padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 4,
+                                  vertical: 10,
                                 ),
-                                decoration: BoxDecoration(
-                                  color: AirColors.surfaceLight,
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: Text(
-                                  _dateLabel(msg.timestamp),
-                                  style: const TextStyle(
-                                    color: AirColors.textSecondary,
-                                    fontSize: 11,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: AirColors.surfaceLight,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Text(
+                                    _dateLabel(msg.timestamp),
+                                    style: const TextStyle(
+                                      color: AirColors.textSecondary,
+                                      fontSize: 11,
+                                    ),
                                   ),
                                 ),
                               ),
+                            ChatBubble(
+                              key: msgKey,
+                              text: msg.text,
+                              isMe: msg.isMe,
+                              timestamp: msg.timestamp,
+                              status: msg.status,
+                              type: msg.type,
+                              mediaKey: msg.mediaKey,
+                              secretKeyHex: msg.secretKeyHex,
+                              nonceHex: msg.nonceHex,
+                              backendUrl: ApiClient.defaultBaseUrl,
+                              peerName: msg.groupSenderName ?? '',
+                              groupSenderName: msg.groupSenderName,
+                              replyToId: msg.replyToId,
+                              replyText: effectiveReplyText,
+                              replyType: effectiveReplyText == 'Message deleted'
+                                  ? 'text'
+                                  : msg.replyType,
+                              replyIsMe: msg.replyIsMe,
+                              highlighted: _highlightedMessageId == msg.id,
+                              onSwipeReply: () =>
+                                  setState(() => _replyTo = msg),
+                              onTapQuote: msg.hasReply
+                                  ? () => _jumpToMessage(msg.replyToId!)
+                                  : null,
+                              onRetryFailed:
+                                  msg.isMe &&
+                                      (msg.status == 'failed' ||
+                                          msg.status == 'expired')
+                                  ? () => _resendGroupMessage(msg)
+                                  : null,
+                              onDeleteForMe: () async {
+                                await MessageDao().deleteMessage(msg.id);
+                                _messageKeys.remove(msg.id);
+                                if (!mounted) return;
+                                ref
+                                    .read(
+                                      activeChatMessagesProvider(
+                                        widget.group.id,
+                                      ).notifier,
+                                    )
+                                    .removeLocalMessage(msg.id);
+                                ref
+                                    .read(refreshBusProvider)
+                                    .fire(
+                                      RefreshEvent(
+                                        type: 'messages',
+                                        chatId: widget.group.id,
+                                      ),
+                                    );
+                              },
                             ),
-                          ChatBubble(
-                            key: msgKey,
-                            text: msg.text,
-                            isMe: msg.isMe,
-                            timestamp: msg.timestamp,
-                            status: msg.status,
-                            type: msg.type,
-                            mediaKey: msg.mediaKey,
-                            secretKeyHex: msg.secretKeyHex,
-                            nonceHex: msg.nonceHex,
-                            backendUrl: ApiClient.defaultBaseUrl,
-                            peerName: msg.groupSenderName ?? '',
-                            groupSenderName: msg.groupSenderName,
-                            replyToId: msg.replyToId,
-                            replyText: effectiveReplyText,
-                            replyType: effectiveReplyText == 'Message deleted'
-                                ? 'text'
-                                : msg.replyType,
-                            replyIsMe: msg.replyIsMe,
-                            highlighted: _highlightedMessageId == msg.id,
-                            onSwipeReply: () => setState(() => _replyTo = msg),
-                            onTapQuote: msg.hasReply
-                                ? () => _jumpToMessage(msg.replyToId!)
-                                : null,
-                            onDeleteForMe: () async {
-                              await MessageDao().deleteMessage(msg.id);
-                              _messageKeys.remove(msg.id);
-                              if (mounted)
-                                ref.invalidate(
-                                  activeChatMessagesProvider(widget.group.id),
-                                );
-                            },
-                          ),
-                        ],
-                      );
-                    },
+                          ],
+                        );
+                      },
+                    ),
                   ),
-                ),
           ),
           if (_replyTo != null)
             Container(
@@ -865,8 +1019,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
                     builder: (context, value, _) {
                       if (value.text.isEmpty) {
                         return VoiceNoteRecorder(
-                          onComplete: (r) =>
-                              _sendVoiceNote(r.path, r.duration),
+                          onComplete: (r) => _sendVoiceNote(r.path, r.duration),
                         );
                       }
                       return SendButton(onSend: _sendMessage);

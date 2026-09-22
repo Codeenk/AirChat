@@ -46,14 +46,8 @@ void main() {
     });
 
     test('parse rejects non-32-byte keys', () {
-      expect(
-        QrContactPayload.parse('{"uid":"u","pk":"PUBKEY"}'),
-        isNull,
-      );
-      expect(
-        QrContactPayload.parse('{"uid":"u","pk":"BASE64KEY=="}'),
-        isNull,
-      );
+      expect(QrContactPayload.parse('{"uid":"u","pk":"PUBKEY"}'), isNull);
+      expect(QrContactPayload.parse('{"uid":"u","pk":"BASE64KEY=="}'), isNull);
     });
 
     test('parse defaults missing username to Peer', () {
@@ -67,10 +61,7 @@ void main() {
       final parsed = QrContactPayload.parse(raw);
       expect(parsed, isNotNull);
       expect(parsed!.uid, 'u1');
-      final quoted = '"${jsonEncode({
-        'uid': 'u2',
-        'pk': _realKey,
-      })}"';
+      final quoted = '"${jsonEncode({'uid': 'u2', 'pk': _realKey})}"';
       expect(QrContactPayload.parse(quoted)?.uid, 'u2');
     });
   });

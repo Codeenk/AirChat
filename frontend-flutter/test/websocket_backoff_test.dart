@@ -15,10 +15,16 @@ void main() {
         expect(n, inInclusiveRange(3, 30));
       }
     });
-    test('nextBackoff is deterministic range (multiple calls stay bounded)', () {
-      for (int j = 0; j < 20; j++) {
-        expect(WebSocketTunnelClient.nextBackoffSeconds(12), inInclusiveRange(3, 30));
-      }
-    });
+    test(
+      'nextBackoff is deterministic range (multiple calls stay bounded)',
+      () {
+        for (int j = 0; j < 20; j++) {
+          expect(
+            WebSocketTunnelClient.nextBackoffSeconds(12),
+            inInclusiveRange(3, 30),
+          );
+        }
+      },
+    );
   });
 }

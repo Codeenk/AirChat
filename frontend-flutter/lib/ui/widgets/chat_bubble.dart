@@ -181,16 +181,19 @@ class _ChatBubbleState extends State<ChatBubble>
       case 'sending':
         return Icon(Icons.access_time, size: 13, color: onLight);
       case 'sent':
+      case 'relayed':
         return Icon(Icons.done, size: 14, color: onLight);
       case 'delivered':
         return Icon(Icons.done_all, size: 14, color: onLight);
       case 'read':
-      default:
         return const Icon(
           Icons.done_all,
           size: 14,
           color: AirColors.bubbleMeText,
         );
+      default:
+        // Unknown/legacy status: never claim more than "sent".
+        return Icon(Icons.done, size: 14, color: onLight);
     }
   }
 
@@ -391,84 +394,85 @@ class _ChatBubbleState extends State<ChatBubble>
           child: Container(
             color: AirColors.surface.withOpacity(0.88),
             child: SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 10),
-            Container(
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: AirColors.border,
-                borderRadius: BorderRadius.circular(2),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(height: 10),
+                  Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: AirColors.border,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.copy_rounded,
+                      color: AirColors.textPrimary,
+                      size: 20,
+                    ),
+                    title: const Text(
+                      'Copy',
+                      style: TextStyle(color: AirColors.textPrimary),
+                    ),
+                    onTap: () {
+                      Clipboard.setData(ClipboardData(text: widget.text));
+                      Navigator.pop(context);
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(const SnackBar(content: Text('Copied')));
+                    },
+                  ),
+                  if (widget.onSwipeReply != null)
+                    ListTile(
+                      leading: const Icon(
+                        Icons.reply,
+                        color: AirColors.textPrimary,
+                        size: 20,
+                      ),
+                      title: const Text(
+                        'Reply',
+                        style: TextStyle(color: AirColors.textPrimary),
+                      ),
+                      onTap: () {
+                        Navigator.pop(context);
+                        widget.onSwipeReply!.call();
+                      },
+                    ),
+                  if (widget.onDeleteForMe != null)
+                    ListTile(
+                      leading: const Icon(
+                        Icons.delete_outline,
+                        color: AirColors.error,
+                        size: 20,
+                      ),
+                      title: const Text(
+                        'Delete for me',
+                        style: TextStyle(color: AirColors.error),
+                      ),
+                      onTap: () {
+                        Navigator.pop(context);
+                        widget.onDeleteForMe!.call();
+                      },
+                    ),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.schedule,
+                      color: AirColors.textSecondary,
+                      size: 20,
+                    ),
+                    title: Text(
+                      time,
+                      style: const TextStyle(
+                        color: AirColors.textSecondary,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
               ),
-            ),
-            ListTile(
-              leading: const Icon(
-                Icons.copy_rounded,
-                color: AirColors.textPrimary,
-                size: 20,
-              ),
-              title: const Text(
-                'Copy',
-                style: TextStyle(color: AirColors.textPrimary),
-              ),
-              onTap: () {
-                Clipboard.setData(ClipboardData(text: widget.text));
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context)
-                    .showSnackBar(const SnackBar(content: Text('Copied')));
-              },
-            ),
-            if (widget.onSwipeReply != null)
-              ListTile(
-                leading: const Icon(
-                  Icons.reply,
-                  color: AirColors.textPrimary,
-                  size: 20,
-                ),
-                title: const Text(
-                  'Reply',
-                  style: TextStyle(color: AirColors.textPrimary),
-                ),
-                onTap: () {
-                  Navigator.pop(context);
-                  widget.onSwipeReply!.call();
-                },
-              ),
-            if (widget.onDeleteForMe != null)
-              ListTile(
-                leading: const Icon(
-                  Icons.delete_outline,
-                  color: AirColors.error,
-                  size: 20,
-                ),
-                title: const Text(
-                  'Delete for me',
-                  style: TextStyle(color: AirColors.error),
-                ),
-                onTap: () {
-                  Navigator.pop(context);
-                  widget.onDeleteForMe!.call();
-                },
-              ),
-            ListTile(
-              leading: const Icon(
-                Icons.schedule,
-                color: AirColors.textSecondary,
-                size: 20,
-              ),
-              title: Text(
-                time,
-                style: const TextStyle(
-                  color: AirColors.textSecondary,
-                  fontSize: 13,
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-          ],
-        ),
             ),
           ),
         ),
@@ -511,82 +515,80 @@ class _ChatBubbleState extends State<ChatBubble>
         ),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
         decoration: BoxDecoration(
-        color: bubbleColor,
-        border: Border.all(
-          color: widget.highlighted
-              ? AirColors.accent
-              : (isFailed
-                    ? AirColors.error
-                    : (widget.isMe ? Colors.transparent : AirColors.border)),
-          width: widget.highlighted || isFailed ? 1.4 : 1,
+          color: bubbleColor,
+          border: Border.all(
+            color: widget.highlighted
+                ? AirColors.accent
+                : (isFailed
+                      ? AirColors.error
+                      : (widget.isMe ? Colors.transparent : AirColors.border)),
+            width: widget.highlighted || isFailed ? 1.4 : 1,
+          ),
+          borderRadius: BorderRadius.circular(widget.isMe ? 18 : 18).copyWith(
+            bottomLeft: widget.isMe
+                ? const Radius.circular(18)
+                : const Radius.circular(4),
+            bottomRight: widget.isMe
+                ? const Radius.circular(4)
+                : const Radius.circular(18),
+          ),
         ),
-        borderRadius: BorderRadius.circular(widget.isMe ? 18 : 18).copyWith(
-          bottomLeft: widget.isMe
-              ? const Radius.circular(18)
-              : const Radius.circular(4),
-          bottomRight: widget.isMe
-              ? const Radius.circular(4)
-              : const Radius.circular(18),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (isFailed)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Text(
-                widget.status == 'expired'
-                    ? "Expired after 24h — recipient was offline. Tap to resend"
-                    : "Not delivered — tap to retry",
-                style: const TextStyle(color: AirColors.error, fontSize: 11),
-              ),
-            ),
-          if (widget.groupSenderName != null &&
-              widget.groupSenderName!.isNotEmpty &&
-              !widget.isMe)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 3),
-              child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxWidth: bubbleMaxWidth - 28,
-                ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isFailed)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
                 child: Text(
-                  widget.groupSenderName!,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AirColors.accent,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
+                  widget.status == 'expired'
+                      ? "Expired after 24h — recipient was offline. Tap to resend"
+                      : "Not delivered — tap to retry",
+                  style: const TextStyle(color: AirColors.error, fontSize: 11),
+                ),
+              ),
+            if (widget.groupSenderName != null &&
+                widget.groupSenderName!.isNotEmpty &&
+                !widget.isMe)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 3),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: bubbleMaxWidth - 28),
+                  child: Text(
+                    widget.groupSenderName!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AirColors.accent,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
               ),
+            if (_hasReply) _buildQuoteBlock(metaColor),
+            _buildContent(),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisSize: MainAxisSize.max,
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                if (widget.type != 'text') ...[
+                  Icon(Icons.lock, size: 10, color: metaColor),
+                  const SizedBox(width: 3),
+                ],
+                Text(
+                  formattedTime,
+                  style: TextStyle(color: metaColor, fontSize: 11),
+                ),
+                if (widget.isMe) ...[
+                  const SizedBox(width: 4),
+                  _buildStatusIcon(),
+                ],
+              ],
             ),
-          if (_hasReply) _buildQuoteBlock(metaColor),
-          _buildContent(),
-          const SizedBox(height: 4),
-          Row(
-            mainAxisSize: MainAxisSize.max,
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              if (widget.type != 'text') ...[
-                Icon(Icons.lock, size: 10, color: metaColor),
-                const SizedBox(width: 3),
-              ],
-              Text(
-                formattedTime,
-                style: TextStyle(color: metaColor, fontSize: 11),
-              ),
-              if (widget.isMe) ...[
-                const SizedBox(width: 4),
-                _buildStatusIcon(),
-              ],
-            ],
-          ),
-        ],
-      ),
+          ],
+        ),
       ),
     );
 
@@ -602,8 +604,7 @@ class _ChatBubbleState extends State<ChatBubble>
             // the outcome (hint in the direction of the gesture).
             Builder(
               builder: (context) {
-                final progress =
-                    (_dragDx / _swipeThreshold).clamp(0.0, 1.0);
+                final progress = (_dragDx / _swipeThreshold).clamp(0.0, 1.0);
                 return Opacity(
                   opacity: progress,
                   child: Transform.translate(

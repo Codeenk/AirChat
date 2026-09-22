@@ -66,79 +66,49 @@ class AttachmentBottomSheet extends StatelessWidget {
             ),
             border: Border.all(color: AirColors.border),
           ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 36,
-            height: 4,
-            margin: const EdgeInsets.only(bottom: 20),
-            decoration: BoxDecoration(
-              color: AirColors.border,
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              _buildItem(
-                icon: Icons.camera_alt_outlined,
-                label: "Camera",
-                onTap: () {
-                  Navigator.pop(context);
-                  onOptionSelected("camera");
-                },
+              Container(
+                width: 36,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 20),
+                decoration: BoxDecoration(
+                  color: AirColors.border,
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
-              _buildItem(
-                icon: Icons.photo_outlined,
-                label: "Gallery",
-                onTap: () {
-                  Navigator.pop(context);
-                  onOptionSelected("gallery");
-                },
-              ),
-              _buildItem(
-                icon: Icons.insert_drive_file_outlined,
-                label: "Document",
-                onTap: () {
-                  Navigator.pop(context);
-                  onOptionSelected("document");
-                },
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  _buildItem(
+                    icon: Icons.camera_alt_outlined,
+                    label: "Camera",
+                    onTap: () {
+                      Navigator.pop(context);
+                      onOptionSelected("camera");
+                    },
+                  ),
+                  _buildItem(
+                    icon: Icons.photo_outlined,
+                    label: "Gallery",
+                    onTap: () {
+                      Navigator.pop(context);
+                      onOptionSelected("gallery");
+                    },
+                  ),
+                  _buildItem(
+                    icon: Icons.insert_drive_file_outlined,
+                    label: "Document",
+                    onTap: () {
+                      Navigator.pop(context);
+                      onOptionSelected("document");
+                    },
+                  ),
+                ],
               ),
             ],
           ),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _buildItem(
-                icon: Icons.headphones_outlined,
-                label: "Audio",
-                onTap: () {
-                  Navigator.pop(context);
-                  onOptionSelected("audio");
-                },
-              ),
-              _buildItem(
-                icon: Icons.location_on_outlined,
-                label: "Location",
-                onTap: () {
-                  Navigator.pop(context);
-                  onOptionSelected("location");
-                },
-              ),
-              _buildItem(
-                icon: Icons.person_outline,
-                label: "Contact",
-                onTap: () {
-                  Navigator.pop(context);
-                  onOptionSelected("contact");
-                },
-              ),
-            ],
-          ),
-        ],
-      ),
         ),
       ),
     );
