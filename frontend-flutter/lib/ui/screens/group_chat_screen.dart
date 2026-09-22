@@ -101,16 +101,18 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
       _loadingMore = true;
       final beforeMax = _scrollController.position.maxScrollExtent;
       final beforePixels = _scrollController.position.pixels;
-      final beforeCount =
-          ref.read(activeChatMessagesProvider(widget.group.id)).length;
+      final beforeCount = ref
+          .read(activeChatMessagesProvider(widget.group.id))
+          .length;
       ref
           .read(activeChatMessagesProvider(widget.group.id).notifier)
           .loadMore()
           .then((_) {
             _loadingMore = false;
             if (!_scrollController.hasClients || !mounted) return;
-            final afterCount =
-                ref.read(activeChatMessagesProvider(widget.group.id)).length;
+            final afterCount = ref
+                .read(activeChatMessagesProvider(widget.group.id))
+                .length;
             // Correct the offset only if content actually grew above;
             // otherwise leave the fling's momentum untouched.
             if (afterCount > beforeCount) {
@@ -772,7 +774,9 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
         curve: Curves.easeOutBack,
         child: FloatingActionButton.small(
           backgroundColor: AirColors.surfaceElevated,
-          foregroundColor: _showFab ? AirColors.textPrimary : Colors.transparent,
+          foregroundColor: _showFab
+              ? AirColors.textPrimary
+              : Colors.transparent,
           onPressed: _showFab ? _scrollToBottom : null,
           child: const Icon(Icons.arrow_downward, size: 18),
         ),

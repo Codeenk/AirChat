@@ -118,15 +118,13 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
       final chatId = buildChatId(_myUid!, widget.contactUid);
       final beforeMax = _scrollController.position.maxScrollExtent;
       final beforePixels = _scrollController.position.pixels;
-      final beforeCount =
-          ref.read(activeChatMessagesProvider(chatId)).length;
+      final beforeCount = ref.read(activeChatMessagesProvider(chatId)).length;
       ref.read(activeChatMessagesProvider(chatId).notifier).loadMore().then((
         _,
       ) {
         _loadingMore = false;
         if (!_scrollController.hasClients || !mounted) return;
-        final afterCount =
-            ref.read(activeChatMessagesProvider(chatId)).length;
+        final afterCount = ref.read(activeChatMessagesProvider(chatId)).length;
         // Correct the offset only if content actually grew above; otherwise
         // leave the fling's momentum untouched.
         if (afterCount > beforeCount) {
@@ -613,7 +611,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
         curve: Curves.easeOutBack,
         child: FloatingActionButton.small(
           backgroundColor: AirColors.surfaceElevated,
-          foregroundColor: _showFab ? AirColors.textPrimary : Colors.transparent,
+          foregroundColor: _showFab
+              ? AirColors.textPrimary
+              : Colors.transparent,
           onPressed: _showFab ? _scrollToBottom : null,
           child: const Icon(Icons.arrow_downward, size: 18),
         ),
