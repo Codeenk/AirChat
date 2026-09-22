@@ -64,7 +64,8 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
   @override
   void didChangeMetrics() {
     // Keyboard open/close resizes the list: re-pin if user was at bottom.
-    if (!_scrollController.hasClients) return;
+    // Never while the finger is down.
+    if (!_scrollController.hasClients || _userScrolling) return;
     final max = _scrollController.position.maxScrollExtent;
     final pixels = _scrollController.position.pixels;
     if (max - pixels < 200) {
@@ -85,6 +86,8 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
 
   static const int _maxMessageKeys = 200;
 
+  bool _loadingMore = false;
+
   void _onScroll() {
     if (!_scrollController.hasClients || _myUid == null) return;
     final nearBottom =
@@ -92,14 +95,25 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
             _scrollController.position.pixels <
         400;
     if (nearBottom != !_showFab) setState(() => _showFab = !nearBottom);
-    if (_scrollController.position.pixels < 200) {
+    if (_scrollController.position.pixels < 200 && !_loadingMore) {
+      // Single-flight: overlapping loadMore→jumpTo corrections used to fight
+      // the fling's momentum, teleporting the list by pages per swipe.
+      _loadingMore = true;
       final beforeMax = _scrollController.position.maxScrollExtent;
       final beforePixels = _scrollController.position.pixels;
+      final beforeCount =
+          ref.read(activeChatMessagesProvider(widget.group.id)).length;
       ref
           .read(activeChatMessagesProvider(widget.group.id).notifier)
           .loadMore()
           .then((_) {
-            if (_scrollController.hasClients) {
+            _loadingMore = false;
+            if (!_scrollController.hasClients || !mounted) return;
+            final afterCount =
+                ref.read(activeChatMessagesProvider(widget.group.id)).length;
+            // Correct the offset only if content actually grew above;
+            // otherwise leave the fling's momentum untouched.
+            if (afterCount > beforeCount) {
               final afterMax = _scrollController.position.maxScrollExtent;
               _scrollController.jumpTo(afterMax - beforeMax + beforePixels);
             }
@@ -752,14 +766,17 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
           ),
         ],
       ),
-      floatingActionButton: _showFab
-          ? FloatingActionButton.small(
-              backgroundColor: AirColors.surfaceElevated,
-              foregroundColor: AirColors.textPrimary,
-              onPressed: _scrollToBottom,
-              child: const Icon(Icons.arrow_downward, size: 18),
-            )
-          : null,
+      floatingActionButton: AnimatedScale(
+        scale: _showFab ? 1.0 : 0.0,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOutBack,
+        child: FloatingActionButton.small(
+          backgroundColor: AirColors.surfaceElevated,
+          foregroundColor: _showFab ? AirColors.textPrimary : Colors.transparent,
+          onPressed: _showFab ? _scrollToBottom : null,
+          child: const Icon(Icons.arrow_downward, size: 18),
+        ),
+      ),
       body: Column(
         children: [
           Expanded(
@@ -804,6 +821,9 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
                     },
                     child: ListView.builder(
                       controller: _scrollController,
+                      // Large enough that flings don't outrun layout (which
+                      // caused extent jumps mid-scroll).
+                      cacheExtent: 800,
                       padding: const EdgeInsets.symmetric(
                         horizontal: 8,
                         vertical: 12,

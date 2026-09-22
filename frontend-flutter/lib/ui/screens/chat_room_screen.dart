@@ -80,8 +80,8 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
   void didChangeMetrics() {
     // Keyboard open/close resizes the list: if the user was pinned to the
     // bottom, re-pin after the resize settles instead of leaving the list
-    // stranded mid-history.
-    if (!_scrollController.hasClients) return;
+    // stranded mid-history. Never while the finger is down.
+    if (!_scrollController.hasClients || _userScrolling) return;
     final max = _scrollController.position.maxScrollExtent;
     final pixels = _scrollController.position.pixels;
     if (max - pixels < 200) {
@@ -97,6 +97,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
 
   bool _showFab = false;
   bool _userScrolling = false;
+  bool _loadingMore = false;
 
   void _onScroll() {
     if (!_scrollController.hasClients) return;
@@ -108,14 +109,27 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
       // invert: show when NOT near bottom
       if (mounted) setState(() => _showFab = !nearBottom);
     }
-    if (_scrollController.position.pixels < 200 && _myUid != null) {
+    if (_scrollController.position.pixels < 200 &&
+        _myUid != null &&
+        !_loadingMore) {
+      // Single-flight: overlapping loadMore→jumpTo corrections used to fight
+      // the fling's momentum, teleporting the list by pages per swipe.
+      _loadingMore = true;
       final chatId = buildChatId(_myUid!, widget.contactUid);
       final beforeMax = _scrollController.position.maxScrollExtent;
       final beforePixels = _scrollController.position.pixels;
+      final beforeCount =
+          ref.read(activeChatMessagesProvider(chatId)).length;
       ref.read(activeChatMessagesProvider(chatId).notifier).loadMore().then((
         _,
       ) {
-        if (_scrollController.hasClients) {
+        _loadingMore = false;
+        if (!_scrollController.hasClients || !mounted) return;
+        final afterCount =
+            ref.read(activeChatMessagesProvider(chatId)).length;
+        // Correct the offset only if content actually grew above; otherwise
+        // leave the fling's momentum untouched.
+        if (afterCount > beforeCount) {
           final afterMax = _scrollController.position.maxScrollExtent;
           _scrollController.jumpTo(afterMax - beforeMax + beforePixels);
         }
@@ -593,14 +607,17 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
           ],
         ),
       ),
-      floatingActionButton: _showFab
-          ? FloatingActionButton.small(
-              backgroundColor: AirColors.surfaceElevated,
-              foregroundColor: AirColors.textPrimary,
-              onPressed: _scrollToBottom,
-              child: const Icon(Icons.arrow_downward, size: 18),
-            )
-          : null,
+      floatingActionButton: AnimatedScale(
+        scale: _showFab ? 1.0 : 0.0,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOutBack,
+        child: FloatingActionButton.small(
+          backgroundColor: AirColors.surfaceElevated,
+          foregroundColor: _showFab ? AirColors.textPrimary : Colors.transparent,
+          onPressed: _showFab ? _scrollToBottom : null,
+          child: const Icon(Icons.arrow_downward, size: 18),
+        ),
+      ),
       body: Column(
         children: [
           Expanded(
@@ -645,7 +662,10 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
                     },
                     child: ListView.builder(
                       controller: _scrollController,
-                      cacheExtent: 300,
+                      // Large enough that flings don't outrun layout (which
+                      // caused extent jumps mid-scroll); bubbles are cheap
+                      // since images decrypt once into cache.
+                      cacheExtent: 800,
                       padding: const EdgeInsets.symmetric(
                         horizontal: 8,
                         vertical: 12,
