@@ -377,7 +377,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
             senderName: senderName,
           );
     } catch (e) {
-      debugPrint('[AirChat] group send failed: $e');
+      debugPrint('[AirChat] group send failed');
       // Fallback to legacy N-send if symmetric encryption fails.
       await _legacyFanOut(
         text: text,
@@ -617,7 +617,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
         messageType: 'image',
       );
     } catch (e) {
-      debugPrint('[AirChat] image pick failed: $e');
+      debugPrint('[AirChat] image pick failed');
     }
   }
 

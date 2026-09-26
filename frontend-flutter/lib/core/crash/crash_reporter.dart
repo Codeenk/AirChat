@@ -44,9 +44,9 @@ class CrashReporter {
         'ts': DateTime.now().toUtc().toIso8601String(),
         'version': _appVersion,
         if (source != null) 'source': source,
-        'error': error.toString(),
+        'error': _redactError(error.toString()),
         if (stackTrace != null)
-          'stack': stackTrace.toString().split('\n').take(24).join('\n'),
+          'stack': _redactStack(stackTrace.toString()),
       }),
     );
   }
@@ -56,9 +56,23 @@ class CrashReporter {
       jsonEncode({
         'ts': DateTime.now().toUtc().toIso8601String(),
         'version': _appVersion,
-        'log': message,
+        'log': _redactError(message),
       }),
     );
+  }
+
+  /// Minimal redaction helpers for local diagnostic logs. These are not crypto
+  /// boundaries; they just keep log lines short and avoid dumping raw network/
+  /// relay objects into crash logs.
+  static String _redactError(String s) {
+    if (s.length <= 200) return s;
+    return s.substring(0, 200);
+  }
+
+  static String _redactStack(String s) {
+    final lines = s.split('\n');
+    if (lines.length <= 12) return s;
+    return lines.take(12).join('\n');
   }
 
   /// Full diagnostics content for the future "Export diagnostics" button.

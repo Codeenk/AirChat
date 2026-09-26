@@ -188,7 +188,7 @@ class GroupActions {
           )
           .timeout(const Duration(seconds: 10));
     } catch (e) {
-      debugPrint('[AirChat] register_group failed: $e');
+      debugPrint('[AirChat] register_group failed');
     }
   }
 

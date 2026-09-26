@@ -76,11 +76,9 @@ class PushService {
     });
   }
 
-  /// THE fix for "notifications don't arrive when the app is killed":
-  /// OEM battery managers (Xiaomi/Oppo/Vivo/Samsung deep sleep) block FCM
-  /// from spawning our background isolate for data-only pushes. Exempting
-  /// the app from battery optimization is the standard, user-approved fix.
-  /// The system dialog is shown at most once (flag in secure storage).
+  /// Helps keep pushes working on OEM devices that aggressively restrict
+  /// background network. The system dialog is shown at most once (flag in
+  /// secure storage).
   Future<void> _ensureBatteryOptimizationExempt() async {
     try {
       final asked = await _storage.read(key: _keyBatteryOptimizationPrompted);
@@ -173,13 +171,14 @@ void registerFirebaseBackgroundHandler() {
   try {
     FirebaseMessaging.onBackgroundMessage(airchatBackgroundHandler);
   } catch (e) {
-    debugPrint('[AirChat] bg handler registration failed: $e');
+    debugPrint('[AirChat] bg handler registration failed');
   }
 }
 
 @pragma('vm:entry-point')
 Future<void> airchatBackgroundHandler(RemoteMessage message) async {
-  debugPrint('[AirChat][bg] handler entered data=${message.data}');
+  // Do not dump the full push payload into logs. It may contain opaque
+  // routing fields and should not be treated as free debug text.
   try {
     // Fresh background isolate — everything must be initialized from scratch.
     if (Firebase.apps.isEmpty) {
@@ -187,17 +186,19 @@ Future<void> airchatBackgroundHandler(RemoteMessage message) async {
     }
     await NotificationService.instance.initialize();
 
+    final data = message.data;
+
     // Notification health self-test: record receipt so the Health screen
     // can show "verified working".
-    if (message.data['senderUid'] == 'self_test') {
+    if (data['senderUid'] == 'self_test') {
       await _handleSelfTest();
       return;
     }
 
     // 24h cache expired: the sender's message was destroyed undelivered.
     // Mark it failed locally + tell the sender honestly.
-    if (message.data['type'] == 'delivery_failed') {
-      await _handleDeliveryFailed(message.data);
+    if (data['type'] == 'delivery_failed') {
+      await _handleDeliveryFailed(data);
       return;
     }
 
@@ -207,7 +208,7 @@ Future<void> airchatBackgroundHandler(RemoteMessage message) async {
     await NativeBridge.startWakeGuard();
 
     // Route to the correct fetch path based on wake type.
-    final wakeType = message.data['type'] as String?;
+    final wakeType = data['type'] as String?;
     String? realText;
     String? groupTitleOverride;
     try {
@@ -217,33 +218,35 @@ Future<void> airchatBackgroundHandler(RemoteMessage message) async {
         realText = await _fetchQueuedMessage(message);
         // _fetchQueuedMessage may have detected a legacy group message.
         // Check the DB for the groupId to show the correct notification.
-        if (realText != null && message.data['senderUid'] != null) {
+        if (realText != null && data['senderUid'] != null) {
           final groupId = await _detectLegacyGroupMessage(
-            message.data['senderUid'] as String,
+            data['senderUid'] as String,
           );
           if (groupId != null) {
             final group = await GroupDao().getGroupById(groupId);
             final senderName = await _resolveSenderName(
-              message.data['senderUid'] as String,
+              data['senderUid'] as String,
             );
             groupTitleOverride = '${group?.name ?? 'Group'} • $senderName';
           }
         }
       }
-    } catch (e) {
-      debugPrint('[AirChat][bg] enrich failed: $e');
+    } catch (_) {
+      debugPrint('[AirChat][bg] enrich failed');
     }
     await _showWakeNotification(
       message,
       bodyOverride: realText,
       titleOverride: groupTitleOverride,
     );
-    debugPrint(
-      '[AirChat][bg] wake notification shown (real=${realText != null})',
-    );
+    debugPrint('[AirChat][bg] wake notification shown');
   } catch (e, st) {
-    debugPrint('[AirChat][bg] handler failed: $e\n$st');
-    CrashReporter.recordError(error: e, stackTrace: st, source: 'fcm-bg');
+    debugPrint('[AirChat][bg] handler failed');
+    CrashReporter.recordError(
+      error: _redactError(e.toString()),
+      stackTrace: st,
+      source: 'fcm-bg',
+    );
   }
 }
 
@@ -307,9 +310,9 @@ Future<void> _handleDeliveryFailed(Map<String, dynamic> data) async {
     );
     debugPrint('[AirChat][bg] marked ${packetIds.length} messages expired');
   } catch (e, st) {
-    debugPrint('[AirChat][bg] delivery_failed handling failed: $e');
+    debugPrint('[AirChat][bg] delivery_failed handling failed');
     CrashReporter.recordError(
-      error: e,
+      error: _redactError(e.toString()),
       stackTrace: st,
       source: 'delivery-failed',
     );
@@ -338,7 +341,7 @@ Future<String?> _fetchQueuedMessage(RemoteMessage message) async {
     if (!completer.isCompleted) completer.complete(null);
   });
 
-  debugPrint('[AirChat][bg] fetch: raw WS connect as $myUid');
+  debugPrint('[AirChat][bg] fetch: connect as $myUid');
   final channel = WebSocketChannel.connect(
     Uri.parse(
       'wss://airchat-relay.malandkar-sarvesh1.workers.dev/tunnel?uid=$myUid',
@@ -346,10 +349,10 @@ Future<String?> _fetchQueuedMessage(RemoteMessage message) async {
   );
   channel.ready
       .then((_) {
-        debugPrint('[AirChat][bg] WS READY');
+        debugPrint('[AirChat][bg] ws ready');
       })
-      .catchError((e) {
-        debugPrint('[AirChat][bg] WS READY FAILED: $e');
+      .catchError((_) {
+        debugPrint('[AirChat][bg] ws ready failed');
       });
   late final StreamSubscription<dynamic> sub;
   sub = channel.stream.listen(
@@ -377,97 +380,89 @@ Future<String?> _fetchQueuedMessage(RemoteMessage message) async {
 
         final cryptoPayload = CryptoPayload.decode(msg['payload'] as String);
         Future(() async {
-          final decrypted = await engine.decryptMessage(
-            payload: cryptoPayload,
-            recipientKeyPair: keyPair,
-          );
-          final decoded = jsonDecode(decrypted);
-          final text = (decoded['text'] as String?) ?? '';
-          final type = (decoded['type'] as String?) ?? 'text';
-          final packetId = msg['packetId'] as String?;
-          final timestamp =
-              (msg['timestamp'] as int?) ??
-              DateTime.now().millisecondsSinceEpoch;
+          try {
+            final decrypted = await engine.decryptMessage(
+              payload: cryptoPayload,
+              recipientKeyPair: keyPair,
+            );
+            final decoded = jsonDecode(decrypted);
+            final text = (decoded['text'] as String?) ?? '';
+            final type = (decoded['type'] as String?) ?? 'text';
+            final packetId = msg['packetId'] as String?;
+            final timestamp =
+                (msg['timestamp'] as int?) ?? DateTime.now().millisecondsSinceEpoch;
 
-          // Detect legacy group messages that arrive via the 1:1 path
-          // (sent by old clients before group_packet support).
-          final payloadGroupId = decoded['groupId'] as String?;
-          final isGroupMsg =
-              payloadGroupId != null && payloadGroupId.isNotEmpty;
+            final payloadGroupId = decoded['groupId'] as String?;
+            final isGroupMsg =
+                payloadGroupId != null && payloadGroupId.isNotEmpty;
 
-          String chatId;
-          if (isGroupMsg) {
-            // Route to group inbox, not personal DM.
-            chatId = payloadGroupId;
-          } else {
-            chatId = buildChatId(myUid, senderUid);
-          }
+            final chatId = isGroupMsg
+                ? payloadGroupId
+                : buildChatId(myUid, senderUid);
 
-          // Resolve sender name for group messages.
-          String groupSenderName = '';
-          if (isGroupMsg) {
-            groupSenderName = decoded['senderName'] as String? ?? '';
-            if (groupSenderName.isEmpty) {
-              try {
+            String groupSenderName = '';
+            if (isGroupMsg) {
+              groupSenderName = decoded['senderName'] as String? ?? '';
+              if (groupSenderName.isEmpty) {
                 final contact = await ContactDao().getContactByUid(senderUid);
                 if (contact != null && contact.username.isNotEmpty) {
                   groupSenderName = contact.username;
                 }
-              } catch (_) {}
+              }
             }
-          }
 
-          // Persist so the app shows it on next open (idempotent by packetId).
-          await MessageDao().insertMessage(
-            ChatMessage(
-              id: packetId ?? 'bg_$timestamp',
-              chatId: chatId,
-              senderUid: senderUid,
-              recipientUid: myUid,
-              text: text,
-              type: type,
-              timestamp: timestamp,
-              isMe: false,
-              status: 'delivered',
-              replyToId: (decoded['replyTo']?['id'] as String?),
-              replyText: (decoded['replyTo']?['text'] as String?) ?? '',
-              replyType: (decoded['replyTo']?['type'] as String?) ?? 'text',
-              replyIsMe: decoded['replyTo']?['isMe'] as bool?,
-              groupId: isGroupMsg ? payloadGroupId : null,
-              groupSenderName: isGroupMsg ? groupSenderName : null,
-            ),
-          );
-
-          if (!isGroupMsg) {
-            await ChatDao().updatePreviewPreservingUnread(
-              ChatThread(
-                id: chatId,
-                contactUid: senderUid,
-                lastMessage: text.isEmpty ? '\u{1F4CE} $type' : text,
-                lastMessageTime: timestamp,
+            // Persist so the app shows it on next open (idempotent by packetId).
+            await MessageDao().insertMessage(
+              ChatMessage(
+                id: packetId ?? 'bg_$timestamp',
+                chatId: chatId,
+                senderUid: senderUid,
+                recipientUid: myUid,
+                text: text,
+                type: type,
+                timestamp: timestamp,
+                isMe: false,
+                status: 'delivered',
+                replyToId: (decoded['replyTo']?['id'] as String?),
+                replyText: (decoded['replyTo']?['text'] as String?) ?? '',
+                replyType: (decoded['replyTo']?['type'] as String?) ?? 'text',
+                replyIsMe: decoded['replyTo']?['isMe'] as bool?,
+                groupId: isGroupMsg ? payloadGroupId : null,
+                groupSenderName: isGroupMsg ? groupSenderName : null,
               ),
             );
-            await ChatDao().incrementUnread(chatId);
+
+            if (!isGroupMsg) {
+              await ChatDao().updatePreviewPreservingUnread(
+                ChatThread(
+                  id: chatId,
+                  contactUid: senderUid,
+                  lastMessage: text.isEmpty ? '\u{1F4CE} $type' : text,
+                  lastMessageTime: timestamp,
+                ),
+              );
+              await ChatDao().incrementUnread(chatId);
+            }
+            // Ack so the relay deletes the queued copy.
+            channel.sink.add(
+              jsonEncode({
+                'action': 'ack',
+                if (packetId != null) 'packetId': packetId,
+                'senderUid': senderUid,
+              }),
+            );
+            if (!completer.isCompleted) {
+              completer.complete(text.isEmpty ? '\u{1F4CE} $type' : text);
+            }
+          } catch (_) {
+            debugPrint('[AirChat][bg] fetch decrypt/persist failed');
           }
-          // Ack so the relay deletes the queued copy.
-          channel.sink.add(
-            jsonEncode({
-              'action': 'ack',
-              if (packetId != null) 'packetId': packetId,
-              'senderUid': senderUid,
-            }),
-          );
-          if (!completer.isCompleted) {
-            completer.complete(text.isEmpty ? '\u{1F4CE} $type' : text);
-          }
-        }).catchError((e) {
-          debugPrint('[AirChat][bg] decrypt/persist failed: $e');
         });
-      } catch (e) {
-        debugPrint('[AirChat][bg] ws msg processing failed: $e');
+      } catch (_) {
+        debugPrint('[AirChat][bg] ws msg failed');
       }
     },
-    onError: (e) {
+    onError: (_) {
       if (!completer.isCompleted) completer.complete(null);
     },
     onDone: () {
@@ -516,7 +511,7 @@ Future<String?> _fetchGroupMessage(RemoteMessage message) async {
   });
 
   debugPrint(
-    '[AirChat][bg] group fetch: WS connect as $myUid for group $groupId',
+    '[AirChat][bg] group fetch: connect as $myUid',
   );
   final channel = WebSocketChannel.connect(
     Uri.parse(
@@ -524,8 +519,8 @@ Future<String?> _fetchGroupMessage(RemoteMessage message) async {
     ),
   );
   channel.ready
-      .then((_) => debugPrint('[AirChat][bg] group WS READY'))
-      .catchError((e) => debugPrint('[AirChat][bg] group WS READY FAILED: $e'));
+      .then((_) => debugPrint('[AirChat][bg] group ws ready'))
+      .catchError((_) => debugPrint('[AirChat][bg] group ws ready failed'));
 
   late final StreamSubscription<dynamic> sub;
   sub = channel.stream.listen(
@@ -620,20 +615,20 @@ Future<String?> _fetchGroupMessage(RemoteMessage message) async {
 
             if (!completer.isCompleted) {
               completer.complete(
-                '$resolvedName: ${text.isEmpty ? '📎 $type' : text}',
+                '$resolvedName: ${text.isEmpty ? '\u{1F4CE} $type' : text}',
               );
             }
-          } catch (e) {
-            debugPrint('[AirChat][bg] group decrypt/persist failed: $e');
+          } catch (_) {
+            debugPrint('[AirChat][bg] group decrypt/persist failed');
           }
-        }).catchError((e) {
-          debugPrint('[AirChat][bg] group message processing failed: $e');
+        }).catchError((_) {
+          debugPrint('[AirChat][bg] group message processing failed');
         });
-      } catch (e) {
-        debugPrint('[AirChat][bg] group ws msg failed: $e');
+      } catch (_) {
+        debugPrint('[AirChat][bg] group ws msg failed');
       }
     },
-    onError: (e) {
+    onError: (_) {
       if (!completer.isCompleted) completer.complete(null);
     },
     onDone: () {
@@ -652,4 +647,18 @@ Future<String?> _fetchGroupMessage(RemoteMessage message) async {
   // Fallback: show sender name even if decryption failed.
   return result ??
       (senderName.isNotEmpty ? '$senderName sent a message' : null);
+}
+
+/// Minimal redaction helpers for local diagnostic logs. These are not crypto
+/// boundaries; they just keep log lines short and avoid dumping raw network/
+/// relay objects into crash logs.
+String _redactError(String s) {
+  if (s.length <= 200) return s;
+  return s.substring(0, 200);
+}
+
+String _redactStack(String s) {
+  final lines = s.split('\n');
+  if (lines.length <= 12) return s;
+  return lines.take(12).join('\n');
 }

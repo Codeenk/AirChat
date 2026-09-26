@@ -485,7 +485,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
         messageType: 'image',
       );
     } catch (e) {
-      debugPrint('[AirChat] image pick failed: $e');
+      debugPrint('[AirChat] image pick failed');
     }
   }
 

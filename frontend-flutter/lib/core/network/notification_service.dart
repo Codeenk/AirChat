@@ -109,6 +109,12 @@ class NotificationService {
   }
 
   /// Shows (or stacks onto) a per-sender message notification.
+  ///
+  /// Security note: notifications are a leakage surface on Android. On an
+  /// unlocked device they can be seen by the OS shade, recent-app switcher,
+  /// other apps with notification/accessibility exposure, and by anyone near
+  /// the device. This method intentionally avoids rich message-content
+  /// previews and never receives decryptable content from the push path.
   Future<void> showMessageNotification({
     required String title,
     required String body,
@@ -124,12 +130,17 @@ class NotificationService {
     );
     final history =
         (senderUid != null ? _shownLines[senderUid] : null) ?? const [];
+
+    // Keep stacked notification history short and bounded. Treat it as a
+    // small in-memory leakage surface, not a full message archive.
+    final cappedHistory = history.length > 8 ? history.sublist(history.length - 8) : history;
+
     final styleInformation = MessagingStyleInformation(
       person,
       groupConversation: false,
       conversationTitle: title,
       messages: [
-        ...history.map(
+        ...cappedHistory.map(
           (l) => Message(
             l.text,
             DateTime.fromMillisecondsSinceEpoch(l.timestamp),
@@ -149,7 +160,7 @@ class NotificationService {
       category: AndroidNotificationCategory.message,
       showWhen: true,
       styleInformation: styleInformation,
-      number: history.length + 1,
+      number: cappedHistory.length + 1,
       // Replace by sender tag so re-shows update in place (no duplicates).
       tag: senderUid,
       autoCancel: true,

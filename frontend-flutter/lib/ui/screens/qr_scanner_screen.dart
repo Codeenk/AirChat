@@ -127,10 +127,10 @@ class _QrScannerScreenState extends State<QrScannerScreen>
       try {
         await controller.start();
       } catch (e) {
-        debugPrint('[AirChat] scanner start failed: $e');
+        debugPrint('[AirChat] scanner start failed');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Scanner failed to start: $e')),
+            const SnackBar(content: Text('Scanner failed to start')),
           );
         }
       }
@@ -238,10 +238,9 @@ class _QrScannerScreenState extends State<QrScannerScreen>
             contactPublicKey: payload.identityPublicKey,
           ),
         ),
-      );
-    } catch (e) {
-      debugPrint('[AirChat] add contact failed: $e');
-      _showSnack('Could not add contact: $e');
+      );      } catch (_) {
+      debugPrint('[AirChat] add contact failed');
+      _showSnack('Could not add contact');
       _isHandled = false;
     } finally {
       _addingContact = false;
