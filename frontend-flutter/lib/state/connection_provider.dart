@@ -384,7 +384,7 @@ class MessageRouter {
           await GroupDao().incrementUnread(chatId);
         }
         bus.fire(RefreshEvent(type: 'messages', chatId: chatId));
-        if (!NotificationService.isAppForeground) {
+        if (!_isOpenChatVisible(chatId)) {
           final gname = groupName ?? 'Group';
           await NotificationService.instance.showMessageNotification(
             title: '$gname • $contactName',
@@ -414,7 +414,7 @@ class MessageRouter {
           client.sendReadReceipt(packetId: packetId, senderUid: senderUid);
         }
 
-        if (!NotificationService.isAppForeground) {
+        if (!_isOpenChatVisible(chatId)) {
           await NotificationService.instance.showMessageNotification(
             title: contactName,
             body: text.isEmpty ? '📎 $messageType' : text,
@@ -529,7 +529,7 @@ class MessageRouter {
       await messageDao.insertMessage(message);
       bus.fire(RefreshEvent(type: 'messages', chatId: groupId));
 
-      if (!NotificationService.isAppForeground) {
+      if (!_isOpenChatVisible(groupId)) {
         await NotificationService.instance.showMessageNotification(
           title: '${localGroup.name} • $contactName',
           body: text.isEmpty ? '📎 $messageType' : text,
@@ -727,6 +727,13 @@ class MessageRouter {
     final ids = [myUid, peerUid]..sort();
     return ids.join('_');
   }
+
+  /// True only when the user is actively looking at [chatId], so a
+  /// notification for it would be redundant. Notifications for every OTHER
+  /// conversation still fire, even while a chat screen is open — otherwise a
+  /// message from a second contact or group would be silently swallowed.
+  bool _isOpenChatVisible(String chatId) =>
+      NotificationService.isAppForeground && MessageRouter.openChatId == chatId;
 
   String _fallbackName(String uid) =>
       'peer_${uid.length > 8 ? uid.substring(uid.length - 8) : uid}';

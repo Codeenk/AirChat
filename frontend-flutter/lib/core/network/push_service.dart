@@ -69,8 +69,9 @@ class PushService {
       _apiClient.sendFcmToken(newToken);
     });
 
-    // Foreground FCM messages (rare — WS carries live traffic). Show a
-    // notification so nothing is silently dropped.
+    // Foreground FCM messages (rare — the live WS MessageRouter already
+    // carries traffic in the foreground and raises a notification for every
+    // conversation that is not the one currently open).
     FirebaseMessaging.onMessage.listen((message) {
       _handleWake(message);
     });
@@ -113,6 +114,7 @@ Future<void> _showWakeNotification(
   RemoteMessage message, {
   String? bodyOverride,
   String? titleOverride,
+  String? chatIdOverride,
 }) async {
   final data = message.data;
   final wakeType = data['type'] as String?;
@@ -139,11 +141,14 @@ Future<void> _showWakeNotification(
   // Regular wake — sender name always resolved on-device.
   if (wakeType != 'wake') return;
 
-  final name = await _resolveSenderName(data['senderUid'] as String?);
+  final senderUid = data['senderUid'] as String?;
+  final name = await _resolveSenderName(senderUid);
   await NotificationService.instance.showMessageNotification(
     title: titleOverride ?? name,
     body: bodyOverride ?? 'You have a new message',
-    senderUid: data['senderUid'] as String?,
+    // Key the notification on the real conversation: a legacy group message
+    // stacks under its group, a 1:1 message under the sender.
+    senderUid: chatIdOverride ?? senderUid,
   );
 }
 
@@ -211,24 +216,26 @@ Future<void> airchatBackgroundHandler(RemoteMessage message) async {
     final wakeType = data['type'] as String?;
     String? realText;
     String? groupTitleOverride;
+    String? chatIdOverride;
     try {
       if (wakeType == 'group_wake') {
         realText = await _fetchGroupMessage(message);
       } else {
-        realText = await _fetchQueuedMessage(message);
-        // _fetchQueuedMessage may have detected a legacy group message.
-        // Check the DB for the groupId to show the correct notification.
-        if (realText != null && data['senderUid'] != null) {
-          final groupId = await _detectLegacyGroupMessage(
-            data['senderUid'] as String,
+        final fetched = await _fetchQueuedMessage(message);
+        realText = fetched?.text;
+        // Only label this with a group name when THIS payload is a group
+        // message (legacy clients deliver group messages over the 1:1 wake
+        // path). Never infer it from the sender's message history — a personal
+        // message from someone who also happens to be in a group with you must
+        // not be titled with that group's name.
+        final fetchedGroupId = fetched?.groupId;
+        if (fetchedGroupId != null && fetchedGroupId.isNotEmpty) {
+          final group = await GroupDao().getGroupById(fetchedGroupId);
+          final senderName = await _resolveSenderName(
+            data['senderUid'] as String?,
           );
-          if (groupId != null) {
-            final group = await GroupDao().getGroupById(groupId);
-            final senderName = await _resolveSenderName(
-              data['senderUid'] as String,
-            );
-            groupTitleOverride = '${group?.name ?? 'Group'} • $senderName';
-          }
+          groupTitleOverride = '${group?.name ?? 'Group'} • $senderName';
+          chatIdOverride = fetchedGroupId;
         }
       }
     } catch (_) {
@@ -238,6 +245,7 @@ Future<void> airchatBackgroundHandler(RemoteMessage message) async {
       message,
       bodyOverride: realText,
       titleOverride: groupTitleOverride,
+      chatIdOverride: chatIdOverride,
     );
     debugPrint('[AirChat][bg] wake notification shown');
   } catch (e, st) {
@@ -248,25 +256,6 @@ Future<void> airchatBackgroundHandler(RemoteMessage message) async {
       source: 'fcm-bg',
     );
   }
-}
-
-/// Checks if the most recent message from senderUid is a legacy group message
-/// (arrived via the 1:1 path but contains groupId). Returns the groupId if so.
-Future<String?> _detectLegacyGroupMessage(String senderUid) async {
-  try {
-    final db = await AppDatabase.instance;
-    final maps = await db.query(
-      'messages',
-      where: 'sender_uid = ? AND group_id IS NOT NULL',
-      whereArgs: [senderUid],
-      orderBy: 'timestamp DESC',
-      limit: 1,
-    );
-    if (maps.isNotEmpty) {
-      return maps.first['group_id'] as String?;
-    }
-  } catch (_) {}
-  return null;
 }
 
 /// Records a successful push round-trip for the Notification Health screen.
@@ -319,12 +308,23 @@ Future<void> _handleDeliveryFailed(Map<String, dynamic> data) async {
   }
 }
 
+/// A message pulled from the relay's background queue: the notification
+/// preview text plus the group it actually belongs to (null for a genuine 1:1
+/// message).
+class _FetchedMessage {
+  final String text;
+  final String? groupId;
+  const _FetchedMessage(this.text, {this.groupId});
+}
+
 /// Connects the tunnel briefly to pull the queued encrypted message from the
-/// relay, decrypts it, persists it locally, and returns the preview text.
+/// relay, decrypts it, persists it locally, and returns the notification
+/// preview (plus the group it belongs to, when the payload is a group
+/// message).
 /// Uses a raw pure-Dart WebSocket (no plugins — guaranteed to work in a
 /// background isolate where plugin registration is unavailable).
 /// Time-boxed — returns null on any failure/timeout.
-Future<String?> _fetchQueuedMessage(RemoteMessage message) async {
+Future<_FetchedMessage?> _fetchQueuedMessage(RemoteMessage message) async {
   final data = message.data;
   final senderUid = data['senderUid'] as String?;
   if (senderUid == null || senderUid.isEmpty) return null;
@@ -336,7 +336,7 @@ Future<String?> _fetchQueuedMessage(RemoteMessage message) async {
   await AppDatabase.instance;
 
   final engine = SodiumEngine();
-  final completer = Completer<String?>();
+  final completer = Completer<_FetchedMessage?>();
   Timer(const Duration(seconds: 15), () {
     if (!completer.isCompleted) completer.complete(null);
   });
@@ -453,7 +453,12 @@ Future<String?> _fetchQueuedMessage(RemoteMessage message) async {
               }),
             );
             if (!completer.isCompleted) {
-              completer.complete(text.isEmpty ? '\u{1F4CE} $type' : text);
+              completer.complete(
+                _FetchedMessage(
+                  text.isEmpty ? '\u{1F4CE} $type' : text,
+                  groupId: isGroupMsg ? payloadGroupId : null,
+                ),
+              );
             }
           } catch (_) {
             debugPrint('[AirChat][bg] fetch decrypt/persist failed');
