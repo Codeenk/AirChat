@@ -72,7 +72,10 @@ jobs:
         working-directory: frontend-flutter
         run: |
           TAG="${{ steps.version.outputs.tag }}"
-          TAG_NUM=$(echo "$TAG" | sed 's/^v//' | sed 's/-.*//')
+          # Drop the leading "v" and any "-prerelease" or "+build" suffix, so a
+          # tag like v1.5.8, v1.5.8+35 or v1.6.0-rc all compare against the
+          # pubspec base version (the part before the "+build" number).
+          TAG_NUM=$(echo "$TAG" | sed -E 's/^v//; s/[+-].*$//')
           PUB=$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d '+' -f 1)
           echo "tag=$TAG_NUM pubspec=$PUB"
           if [ "$TAG_NUM" != "$PUB" ]; then
