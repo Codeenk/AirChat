@@ -45,8 +45,7 @@ class CrashReporter {
         'version': _appVersion,
         if (source != null) 'source': source,
         'error': _redactError(error.toString()),
-        if (stackTrace != null)
-          'stack': _redactStack(stackTrace.toString()),
+        if (stackTrace != null) 'stack': _redactStack(stackTrace.toString()),
       }),
     );
   }

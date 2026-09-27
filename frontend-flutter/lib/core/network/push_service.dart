@@ -390,7 +390,8 @@ Future<String?> _fetchQueuedMessage(RemoteMessage message) async {
             final type = (decoded['type'] as String?) ?? 'text';
             final packetId = msg['packetId'] as String?;
             final timestamp =
-                (msg['timestamp'] as int?) ?? DateTime.now().millisecondsSinceEpoch;
+                (msg['timestamp'] as int?) ??
+                DateTime.now().millisecondsSinceEpoch;
 
             final payloadGroupId = decoded['groupId'] as String?;
             final isGroupMsg =
@@ -510,9 +511,7 @@ Future<String?> _fetchGroupMessage(RemoteMessage message) async {
     if (!completer.isCompleted) completer.complete(null);
   });
 
-  debugPrint(
-    '[AirChat][bg] group fetch: connect as $myUid',
-  );
+  debugPrint('[AirChat][bg] group fetch: connect as $myUid');
   final channel = WebSocketChannel.connect(
     Uri.parse(
       'wss://airchat-relay.malandkar-sarvesh1.workers.dev/tunnel?uid=$myUid',
@@ -655,10 +654,4 @@ Future<String?> _fetchGroupMessage(RemoteMessage message) async {
 String _redactError(String s) {
   if (s.length <= 200) return s;
   return s.substring(0, 200);
-}
-
-String _redactStack(String s) {
-  final lines = s.split('\n');
-  if (lines.length <= 12) return s;
-  return lines.take(12).join('\n');
 }

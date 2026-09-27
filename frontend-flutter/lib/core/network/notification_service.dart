@@ -133,7 +133,9 @@ class NotificationService {
 
     // Keep stacked notification history short and bounded. Treat it as a
     // small in-memory leakage surface, not a full message archive.
-    final cappedHistory = history.length > 8 ? history.sublist(history.length - 8) : history;
+    final cappedHistory = history.length > 8
+        ? history.sublist(history.length - 8)
+        : history;
 
     final styleInformation = MessagingStyleInformation(
       person,

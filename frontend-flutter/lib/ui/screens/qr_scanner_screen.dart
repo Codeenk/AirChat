@@ -238,7 +238,8 @@ class _QrScannerScreenState extends State<QrScannerScreen>
             contactPublicKey: payload.identityPublicKey,
           ),
         ),
-      );      } catch (_) {
+      );
+    } catch (_) {
       debugPrint('[AirChat] add contact failed');
       _showSnack('Could not add contact');
       _isHandled = false;
