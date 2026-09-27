@@ -63,11 +63,23 @@ impersonate a contact or inject authenticated actions.
 Groups use a shared symmetric key for members. That key is distributed through
 encrypted channels to members and rotated when membership changes.
 
-Important security property:
-- group secrecy depends on the group key remaining confined to current members
-- membership changes must be handled carefully so removed members do not retain
-  access and new members do not automatically learn unrelated history
-- group control actions should be authenticated where possible
+Honest properties of this design — full detail in `SECURITY_GROUP_CRYPTO.md`:
+
+- It provides confidentiality against the relay and non-members, per-sender
+  authenticity (Ed25519 signatures over `packetId|text|chatId`), and revocation
+  once the key is rotated after a removal.
+- It does **not** provide per-message forward secrecy or post-compromise
+  security, unlike the 1:1 path, which derives a fresh ephemeral key per
+  message. Every message under one group key is protected by that same key.
+- Group secrecy depends on the group key remaining confined to current members.
+- Membership changes must be handled carefully so removed members do not retain
+  access and new members do not automatically learn unrelated history.
+- Group control actions should be authenticated where possible.
+
+Replacing the shared key with an MLS (RFC 9420) ratchet is the planned
+migration; the blockers and their dependency order are recorded in
+`SECURITY_GROUP_CRYPTO.md` §6. Until that lands, group secrecy must not be
+described as equivalent to 1:1 secrecy.
 
 ## 4. Server / relay design
 

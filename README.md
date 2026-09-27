@@ -18,12 +18,12 @@
 
 ## What is AirChat?
 
-AirChat is a **privacy-first messenger** where the server is designed to *know nothing*. Every message is encrypted on your device with **X25519 ephemeral key exchange + ChaCha20-Poly1305** before it ever touches the network. The relay can't read, store long-term, or profile anything you do.
+AirChat is a **privacy-first messenger** where the server is designed to *know nothing*. Every message is encrypted on your device with **X25519 ephemeral key exchange + ChaCha20-Poly1305** before it ever touches the network. The relay cannot read your messages, and keeps no long-term copy of message content. It does retain the minimal identity directory and group-membership records it needs to route — see [SECURITY_THREAT_MODEL.md](SECURITY_THREAT_MODEL.md) for what that does and does not reveal.
 
 | | |
 |---|---|
-| 🔐 **True E2EE** | Per-message ephemeral keys — forward secrecy by design. The server only ever sees ciphertext `{ct, n, epk}`. |
-| 👻 **Ephemeral relay** | Offline messages queue in a Durable Object and self-destruct after 24 hours via alarms. Nothing persists. |
+| 🔐 **True E2EE** | Content is encrypted on-device before it leaves. 1:1 chats use a fresh ephemeral key per message — forward secrecy by design. The server only ever sees ciphertext. |
+| 👻 **Ephemeral relay** | Offline messages queue in a Durable Object and self-destruct after 24 hours via alarms — message content never persists. The relay does keep a minimal identity directory and group-membership records for routing. |
 | 📇 **Identity = QR code** | No emails or phone numbers. Scan a peer's QR to exchange keys and start chatting instantly. |
 | 🏷️ **Human usernames** | Set a display name — it rides along in your QR and appears to anyone you message for the first time. |
 | 🔔 **Reliable notifications** | FCM wake-up pushes + local notifications deliver messages even when the app is closed. |
@@ -108,30 +108,38 @@ Or just push a tag — GitHub Actions builds signed artifacts automatically (see
 
 ## CI/CD
 
-Every push runs the full pipeline:
-
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `android-build.yml` | push / PR / tag | Analyze → Test → Build release APK → Upload artifact → attach to GitHub Releases on tags |
+| `android-build.yml` | push / PR touching `frontend-flutter/**`, or manual | Format check → Analyze → Test → build the release APKs (split-per-abi, obfuscated) → upload them as a **build artifact** (dev build; publishes nothing) |
+| `release.yml` | pushing a `v*` tag, or manual | Format check → Analyze → Test → verify the tag matches `pubspec.yaml` → require signing secrets → build **signed** release APKs → publish a GitHub Release with `SHA256SUMS.txt` and debug symbols |
 
-Download the latest dev build from **Actions → Android CI → artifacts**, or stable builds from **Releases**.
+Only `release.yml` creates a GitHub Release, and only for a signed build. To cut a release: bump `version:` in `frontend-flutter/pubspec.yaml`, then push a matching tag (for example `v1.6.5`). The tag's version must equal the pubspec version *before* its `+` build number.
+
+Download the latest dev build from **Actions → Android CI → artifacts**, or published builds from **Releases**.
 
 ## Security Model
 
-- **Encryption**: X25519 ECDH with per-message ephemeral sender keys, ChaCha20-Poly1305 AEAD.
+- **1:1 messages**: X25519 ECDH with a fresh ephemeral sender key **per message**, ChaCha20-Poly1305 AEAD — forward secrecy by design.
+- **Group messages**: one 32-byte symmetric key shared by all members (ChaCha20-Poly1305), distributed pairwise over the 1:1 channel and rotated whenever membership changes. Senders are individually authenticated with Ed25519, so the relay or a member cannot forge another member's message. This gives *key rotation on membership change* — it is **not** per-message forward secrecy or post-compromise security. A current member's key decrypts every message sent under that key. See [SECURITY_GROUP_CRYPTO.md](SECURITY_GROUP_CRYPTO.md).
 - **Storage**: SQLCipher-encrypted local database; key material in platform secure storage (Keystore / Keychain).
-- **Server**: sees only uid hashes of activity, ciphertext blobs, and public identity keys. Registration signatures use Ed25519.
-- **Media**: AES-encrypted before upload; decryption keys travel only inside E2EE messages.
+- **Server**: sees uid, ciphertext blobs, public identity keys, and the group-membership records it needs for routing. It never sees a group key or any message plaintext. Registration and message signatures use Ed25519.
+- **Media**: encrypted client-side before upload; decryption keys travel only inside E2EE messages.
 
-⚠️ **Status**: AirChat is under active development. The crypto design follows well-reviewed primitives, but the implementation has **not yet undergone an independent security audit**. Treat it accordingly.
+⚠️ **Status**: AirChat is under active development. The crypto design follows well-reviewed primitives, but the implementation has **not yet undergone an independent security audit**. Treat it accordingly, and read [SECURITY_THREAT_MODEL.md](SECURITY_THREAT_MODEL.md) for what this app explicitly does *not* protect against.
 
 ## Roadmap
 
-- [ ] Per-message Ed25519 signing (sender authentication)
-- [ ] Voice notes & calls
-- [ ] Group chats (MLS-style)
-- [ ] iOS App Store release
-- [ ] Independent security audit
+Shipped:
+
+- [x] Per-message Ed25519 signing (sender authentication) — 1:1 and group messages are signed over `packetId|text|chatId` and verified on receipt, so a hostile relay cannot synthesize a message "from" a contact.
+- [x] Voice notes — record, encrypt, send, play.
+
+Open:
+
+- [ ] Group chats on an MLS-style ratchet (RFC 9420). Today's groups use a rotated shared key; the migration design note lives in [SECURITY_GROUP_CRYPTO.md](SECURITY_GROUP_CRYPTO.md).
+- [ ] Voice calls.
+- [ ] iOS App Store release.
+- [ ] Independent security audit.
 
 ## Contributing
 
