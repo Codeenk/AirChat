@@ -27,7 +27,7 @@ class AppDatabase {
       return await databaseFactoryFfiWeb.openDatabase(
         '/airchat/airchat_web.db',
         options: OpenDatabaseOptions(
-          version: 8,
+          version: 11,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         ),
@@ -41,7 +41,7 @@ class AppDatabase {
       return await openDatabase(
         path,
         password: masterKey,
-        version: 8,
+        version: 11,
         onCreate: _onCreate,
         onUpgrade: _onUpgrade,
       );
@@ -55,7 +55,7 @@ class AppDatabase {
         return await openDatabase(
           path,
           password: masterKey,
-          version: 8,
+          version: 11,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         );
@@ -82,7 +82,10 @@ class AppDatabase {
         username TEXT NOT NULL,
         identity_public_key TEXT NOT NULL,
         signing_public_key TEXT,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        verified_identity_key TEXT,
+        verified_signing_key TEXT,
+        verified_at INTEGER
       )
     ''');
 
@@ -106,6 +109,8 @@ class AppDatabase {
         member_uids TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         group_key TEXT,
+        key_version INTEGER DEFAULT 0,
+        crypto_version INTEGER DEFAULT 1,
         unread_count INTEGER DEFAULT 0
       )
     ''');
@@ -230,6 +235,48 @@ class AppDatabase {
         );
       } catch (e) {
         if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;
+      }
+    }
+    if (oldVersion < 9) {
+      // v9: group key generation. Lets a receiver reject a replayed old
+      // group_add/group_invite instead of letting it restore a superseded key.
+      // Existing groups keep 0 and are guarded by the next rotation (1+).
+      try {
+        await db.execute(
+          'ALTER TABLE groups ADD COLUMN key_version INTEGER DEFAULT 0',
+        );
+      } catch (e) {
+        if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;
+      }
+    }
+    if (oldVersion < 11) {
+      // v11: which group-key scheme a group uses. Defaults to 1 (legacy shared
+      // key), which is the truth for every group that already exists — their
+      // key cannot be turned into an MLS epoch, so they stay on the old path and
+      // keep working. Only groups created from here on get 2 (MLS).
+      try {
+        await db.execute(
+          'ALTER TABLE groups ADD COLUMN crypto_version INTEGER DEFAULT 1',
+        );
+      } catch (e) {
+        if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;
+      }
+    }
+    if (oldVersion < 10) {
+      // v10: safety-number verification. Stores the peer keys the user actually
+      // confirmed out of band, so a later change is detected rather than silent.
+      // Existing contacts keep all-NULL here, i.e. "not yet verified" — which is
+      // the truth: nobody has compared a number for them.
+      for (final sql in [
+        'ALTER TABLE contacts ADD COLUMN verified_identity_key TEXT',
+        'ALTER TABLE contacts ADD COLUMN verified_signing_key TEXT',
+        'ALTER TABLE contacts ADD COLUMN verified_at INTEGER',
+      ]) {
+        try {
+          await db.execute(sql);
+        } catch (e) {
+          if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;
+        }
       }
     }
   }

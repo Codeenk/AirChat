@@ -189,9 +189,11 @@ Future<void> _initializeServices(
     await pushService.initialize();
   } catch (_) {}
 
-  // 3. Start the wire + group re-key watcher.
+  // 3. Start the wire + group re-key watcher, and refresh the relay's
+  //    expiring group routing state for every group still in the local DB.
   container.read(messageRouterProvider(uid));
   container.read(groupRekeyWatcherProvider);
+  container.read(groupMembershipRefreshProvider);
 
   unawaited(
     Future.delayed(

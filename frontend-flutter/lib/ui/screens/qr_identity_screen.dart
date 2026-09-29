@@ -29,11 +29,16 @@ class _QrIdentityScreenState extends State<QrIdentityScreen> {
     final uid = await KeyStore.getUid() ?? '';
     final username = await KeyStore.getUsername() ?? 'airchat_user';
     final pubKey = await KeyStore.getPublicKey() ?? '';
+    // Carry the signing key too. It is half of the safety number, so a code
+    // scanned in person is then an out-of-band source for both keys — which is
+    // what lets the scanner detect a directory that served different ones.
+    final signingKey = await KeyStore.getSigningPublicKey() ?? '';
 
     final payload = QrContactPayload(
       uid: uid,
       username: username,
       identityPublicKey: pubKey,
+      signingPublicKey: signingKey.isEmpty ? null : signingKey,
     );
 
     setState(() {

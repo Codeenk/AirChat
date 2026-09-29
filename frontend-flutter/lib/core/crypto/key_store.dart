@@ -15,6 +15,9 @@ class KeyStore {
   static const _keySigningPrivateKey = 'airchat_signing_private_key';
   static const _keySigningPublicKey = 'airchat_signing_public_key';
   static const _keySigningSignature = 'airchat_signing_signature';
+  static const _keyMlsStorage = 'airchat_mls_storage_key';
+  static const _keyMlsSignerPrivate = 'airchat_mls_signer_private';
+  static const _keyMlsSignerPublic = 'airchat_mls_signer_public';
 
   static final SodiumEngine _engine = SodiumEngine();
 
@@ -38,6 +41,35 @@ class KeyStore {
       } catch (_) {}
       return masterKey;
     }
+  }
+
+  /// 32-byte AES-256 key encrypting the MLS state database (OpenMLS owns that
+  /// file itself; the key must never be recoverable from it).
+  static Future<String> getOrCreateMlsStorageKey() async {
+    final existing = await _safeRead(_keyMlsStorage);
+    if (existing != null) return existing;
+    final keyBytes = _engine.cipher.newNonce();
+    final key = base64Encode(keyBytes);
+    try {
+      await _storage.write(key: _keyMlsStorage, value: key);
+    } catch (_) {}
+    return key;
+  }
+
+  static Future<String?> getMlsSignerPrivateKey() async =>
+      await _safeRead(_keyMlsSignerPrivate);
+
+  static Future<String?> getMlsSignerPublicKey() async =>
+      await _safeRead(_keyMlsSignerPublic);
+
+  /// Persist the MLS signature key pair. The private half is private key
+  /// material and belongs in secure storage only.
+  static Future<void> saveMlsSigner({
+    required String privateKeyBase64,
+    required String publicKeyBase64,
+  }) async {
+    await _storage.write(key: _keyMlsSignerPrivate, value: privateKeyBase64);
+    await _storage.write(key: _keyMlsSignerPublic, value: publicKeyBase64);
   }
 
   static Future<String?> _safeRead(String key) async {

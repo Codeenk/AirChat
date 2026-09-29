@@ -11,6 +11,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../../core/crypto/key_store.dart';
 import '../../core/database/daos/chat_dao.dart';
+import '../../core/database/daos/contact_dao.dart';
 import '../../core/database/daos/message_dao.dart';
 import '../../core/device/device_info_helper.dart';
 import '../../models/chat_thread.dart';
@@ -27,6 +28,7 @@ import '../widgets/attachment_bottom_sheet.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/send_button.dart';
 import '../widgets/voice_note_recorder.dart';
+import 'security_number_screen.dart';
 
 class ChatRoomScreen extends ConsumerStatefulWidget {
   final String contactName;
@@ -49,6 +51,11 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   String? _myUid;
+
+  /// True when this contact's keys no longer match the ones the user verified.
+  /// Surfaced as a banner rather than a dialog: it must be visible while reading
+  /// the conversation, without blocking it.
+  bool _securityWarning = false;
   ChatMessage? _replyTo;
   String? _highlightedMessageId;
   final Map<String, GlobalKey> _messageKeys = {};
@@ -169,7 +176,75 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
         .forEach(_messageKeys.remove);
   }
 
+  Future<void> _refreshSecurityWarning() async {
+    final contact = await ContactDao().getContactByUid(widget.contactUid);
+    if (!mounted) return;
+    final changed = contact?.hasKeyChanged ?? false;
+    if (changed != _securityWarning) {
+      setState(() => _securityWarning = changed);
+    }
+  }
+
+  Future<void> _openSecurityCode() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SecurityNumberScreen(
+          contactUid: widget.contactUid,
+          contactName: widget.contactName,
+        ),
+      ),
+    );
+    // They may have verified, adopted scanned keys, or revoked — re-read so the
+    // banner reflects what they just decided.
+    await _refreshSecurityWarning();
+  }
+
+  /// Persistent banner for the one state that must not be missed: keys that were
+  /// verified and have since changed. Tappable, and deliberately not a modal —
+  /// the user still needs to read the conversation to understand what happened.
+  Widget _buildSecurityWarning() {
+    return Material(
+      color: AirColors.surface,
+      child: InkWell(
+        onTap: _openSecurityCode,
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: const BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: AirColors.error, width: 1),
+            ),
+          ),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.gpp_maybe_outlined,
+                size: 18,
+                color: AirColors.error,
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'Security code changed — this chat may not be private. Tap to '
+                  'review.',
+                  style: TextStyle(
+                    color: AirColors.error,
+                    fontSize: 12,
+                    height: 1.35,
+                  ),
+                ),
+              ),
+              const Icon(Icons.chevron_right, size: 18, color: AirColors.error),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _initAsync() async {
+    unawaited(_refreshSecurityWarning());
     final uid = await KeyStore.getUid();
     if (!mounted || uid == null) return;
     {
@@ -604,6 +679,19 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
             ),
           ],
         ),
+        actions: [
+          IconButton(
+            tooltip: 'Security code',
+            icon: Icon(
+              _securityWarning
+                  ? Icons.gpp_maybe_outlined
+                  : Icons.verified_user_outlined,
+              size: 20,
+              color: _securityWarning ? AirColors.error : AirColors.textPrimary,
+            ),
+            onPressed: _openSecurityCode,
+          ),
+        ],
       ),
       floatingActionButton: AnimatedScale(
         scale: _showFab ? 1.0 : 0.0,
@@ -620,6 +708,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen>
       ),
       body: Column(
         children: [
+          if (_securityWarning) _buildSecurityWarning(),
           Expanded(
             child: messages.isEmpty
                 ? Center(

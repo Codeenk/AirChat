@@ -242,9 +242,11 @@ class WebSocketTunnelClient {
 
   /// Sends a group packet — one encrypted payload stored once in the group
   /// inbox, woken to all members by the relay.
+  ///
+  /// No group name: the relay only routes the packet, and every recipient
+  /// resolves the name from their own local state.
   void sendGroupPacket({
     required String groupId,
-    required String groupName,
     required String encryptedPayload,
     required String packetId,
     required String senderName,
@@ -252,7 +254,6 @@ class WebSocketTunnelClient {
     final packet = {
       'action': 'send_group_packet',
       'groupId': groupId,
-      'groupName': groupName,
       'encryptedPayload': encryptedPayload,
       'packetId': packetId,
       'senderName': senderName,

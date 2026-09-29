@@ -371,7 +371,6 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
           .read(websocketClientProvider(myUid))
           .sendGroupPacket(
             groupId: group.id,
-            groupName: group.name,
             encryptedPayload: enc.encode(),
             packetId: packetId,
             senderName: senderName,

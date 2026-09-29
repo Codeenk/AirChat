@@ -87,6 +87,19 @@ class GroupDao {
     );
   }
 
+  /// Advances the group's key generation. Monotonic: a receiver uses it to
+  /// reject a replayed older `group_add`/`group_invite` that would otherwise
+  /// restore a superseded group key.
+  Future<void> updateKeyVersion(String id, int keyVersion) async {
+    final db = await AppDatabase.instance;
+    await db.update(
+      'groups',
+      {'key_version': keyVersion},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   Future<void> deleteGroup(String id) async {
     final db = await AppDatabase.instance;
     await db.delete('groups', where: 'id = ?', whereArgs: [id]);

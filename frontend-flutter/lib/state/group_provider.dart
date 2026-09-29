@@ -55,6 +55,7 @@ class GroupActions {
       memberUids: allMembers,
       createdAt: DateTime.now().millisecondsSinceEpoch,
       groupKey: groupKey,
+      keyVersion: 1, // first generation of this group key
     );
     await ref.read(groupDaoProvider).insertGroup(group);
 
@@ -89,6 +90,7 @@ class GroupActions {
             'groupName': group.name,
             'memberUids': allMembers,
             'groupKey': groupKey, // encrypted per-member via X25519
+            'keyVersion': group.keyVersion,
             if (inviteSig.isNotEmpty) 'sig': inviteSig,
           };
           final enc = await engine.encryptMessage(
@@ -120,6 +122,9 @@ class GroupActions {
     // Re-key on membership change: the new key goes only to the new roster.
     final newKey = _generateGroupKey();
     await dao.updateGroupKey(groupId, newKey);
+    // Generation advances with the key, so a stale replayed group_add cannot
+    // put this old key back.
+    await dao.updateKeyVersion(groupId, group.keyVersion + 1);
     await dao.updateMembers(groupId, updated);
 
     // Re-register with the server so new members get group wakes.
@@ -178,10 +183,12 @@ class GroupActions {
           .post(
             uri,
             headers: {'Content-Type': 'application/json'},
+            // No groupName: the relay stores routing state only. The name is
+            // not needed to fan out a wake, and retaining it server-side was
+            // the metadata leak documented in SECURITY_GROUP_CRYPTO.md §5.
             body: jsonEncode({
               'uid': myUid,
               'groupId': group.id,
-              'groupName': group.name,
               'memberUids': group.memberUids,
               'signature': signature,
             }),
@@ -229,6 +236,9 @@ class GroupActions {
           'groupName': group?.name ?? '',
           'memberUids': memberUids,
           if (group?.groupKey != null) 'groupKey': group!.groupKey,
+          // Receivers reject a key-carrying control that is not newer than
+          // what they hold, which is what makes rotation replay-proof.
+          if (group != null) 'keyVersion': group.keyVersion,
           if (kickedUid != null) 'kickedUid': kickedUid,
           if (controlSig.isNotEmpty) 'sig': controlSig,
         };
@@ -262,6 +272,7 @@ class GroupActions {
     if (group == null) return;
     final newKey = _generateGroupKey();
     await dao.updateGroupKey(groupId, newKey);
+    await dao.updateKeyVersion(groupId, group.keyVersion + 1);
     ref.invalidate(groupsProvider);
     await _broadcastGroupControl(
       groupId: groupId,
@@ -299,4 +310,31 @@ final groupRekeyWatcherProvider = Provider((ref) {
   ref.onDispose(() => sub.cancel());
   ref.keepAlive();
   return sub;
+});
+
+/// Re-registers every local group with the relay once per app launch.
+///
+/// Relay-side group membership is now *expiring* routing state rather than a
+/// permanent table (SECURITY_GROUP_CRYPTO.md §5), so a group the user has not
+/// touched in a long time would eventually fall out of it and stop receiving
+/// wakes. Refreshing on launch keeps the groups a user actually still has
+/// alive without asking the relay to remember them forever.
+/// KeepAlive: this must run even with no chat screen open.
+final groupMembershipRefreshProvider = Provider((ref) {
+  ref.keepAlive();
+  Future(() async {
+    try {
+      final myUid = await KeyStore.getUid() ?? '';
+      if (myUid.isEmpty) return;
+      final dao = ref.read(groupDaoProvider);
+      final groups = await dao.getAllGroups();
+      final actions = ref.read(groupActionsProvider);
+      for (final group in groups) {
+        // A one-member group has nobody to route to.
+        if (group.memberUids.length < 2) continue;
+        await actions._registerGroupWithServer(group);
+      }
+    } catch (_) {}
+  });
+  return null;
 });

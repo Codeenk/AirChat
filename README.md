@@ -133,10 +133,13 @@ Shipped:
 
 - [x] Per-message Ed25519 signing (sender authentication) — 1:1 and group messages are signed over `packetId|text|chatId` and verified on receipt, so a hostile relay cannot synthesize a message "from" a contact.
 - [x] Voice notes — record, encrypt, send, play.
+- [x] Safety numbers — a 60-digit code derived from both parties' keys, compared in person or by QR, so a hostile relay cannot quietly substitute keys and read along. A verified contact whose keys later change raises a visible warning. See [SECURITY_DESIGN.md](SECURITY_DESIGN.md) §3.4.
 
 Open:
 
-- [ ] Group chats on an MLS-style ratchet (RFC 9420). Today's groups use a rotated shared key; the migration design note lives in [SECURITY_GROUP_CRYPTO.md](SECURITY_GROUP_CRYPTO.md).
+- [ ] A ratchet (X3DH + Double Ratchet) for 1:1 chats. Today each message uses a fresh ephemeral key, which binds a compromise to one message but is *not* forward secrecy against long-term key compromise — [SECURITY_DESIGN.md](SECURITY_DESIGN.md) §3.1 states the exact guarantee.
+- [ ] Group chats on an MLS ratchet (RFC 9420). Today's groups use a rotated shared key. The MLS group crypto is implemented and tested against OpenMLS, but **not yet wired to messaging** — no KeyPackage is published, no Welcome is delivered, and no group in the app uses it, because switching the wire format without version gating would break every peer on a released build. Status per blocker: [SECURITY_GROUP_CRYPTO.md](SECURITY_GROUP_CRYPTO.md) §6–§7.
+- [ ] Notification preview control. Message text is rendered locally and is visible on the lock screen unless previews are restricted in Android settings.
 - [ ] Voice calls.
 - [ ] iOS App Store release.
 - [ ] Independent security audit.

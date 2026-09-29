@@ -16,7 +16,17 @@ import '../../state/chat_provider.dart';
 import 'chat_room_screen.dart';
 
 class QrScannerScreen extends StatefulWidget {
-  const QrScannerScreen({Key? key}) : super(key: key);
+  /// When set, the screen runs in **verification** mode instead of add-contact
+  /// mode: it scans [verifyContactUid]'s code and pops with the payload so the
+  /// caller can compare the scanned keys against what it holds, rather than
+  /// saving a new contact. Reusing this screen keeps one implementation of the
+  /// camera lifecycle, which is the fragile part.
+  final String? verifyContactUid;
+
+  final String? title;
+
+  const QrScannerScreen({Key? key, this.verifyContactUid, this.title})
+    : super(key: key);
 
   @override
   State<QrScannerScreen> createState() => _QrScannerScreenState();
@@ -154,12 +164,30 @@ class _QrScannerScreenState extends State<QrScannerScreen>
       final rawValue = barcode.rawValue;
       if (rawValue == null) continue;
       final payload = QrContactPayload.parse(rawValue);
-      if (payload != null) {
-        _isHandled = true;
-        _addContactAndOpenChat(payload);
-        break;
+      if (payload == null) continue;
+      if (widget.verifyContactUid != null) {
+        _finishVerify(payload);
+        return;
       }
+      _isHandled = true;
+      _addContactAndOpenChat(payload);
+      break;
     }
+  }
+
+  /// Verification mode: only the expected contact's code is accepted; anything
+  /// else re-arms after a beat so the user can just point at the right screen.
+  void _finishVerify(QrContactPayload payload) {
+    if (payload.uid != widget.verifyContactUid) {
+      _isHandled = true;
+      _showSnack("That's a different contact's code — keep scanning.");
+      Timer(const Duration(seconds: 2), () {
+        if (mounted) _isHandled = false;
+      });
+      return;
+    }
+    _isHandled = true;
+    Navigator.pop(context, payload);
   }
 
   Future<void> _pasteIdentity() async {
@@ -172,6 +200,10 @@ class _QrScannerScreenState extends State<QrScannerScreen>
     final payload = QrContactPayload.parse(text);
     if (payload == null) {
       _showSnack("Not a valid AirChat identity");
+      return;
+    }
+    if (widget.verifyContactUid != null) {
+      _finishVerify(payload);
       return;
     }
     _addContactAndOpenChat(payload);
@@ -206,6 +238,10 @@ class _QrScannerScreenState extends State<QrScannerScreen>
           uid: payload.uid,
           username: payload.username,
           identityPublicKey: payload.identityPublicKey,
+          // The code carries their signing key, so record it now instead of
+          // waiting for a directory round trip. Doing so means a code scanned in
+          // person is a complete, out-of-band source for both keys.
+          signingPublicKey: payload.signingPublicKey,
           createdAt: DateTime.now().millisecondsSinceEpoch,
         ),
       );
@@ -256,7 +292,12 @@ class _QrScannerScreenState extends State<QrScannerScreen>
         backgroundColor: Colors.transparent,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
-        title: const Text("Scan Contact QR Code"),
+        title: Text(
+          widget.title ??
+              (widget.verifyContactUid != null
+                  ? 'Scan their security code'
+                  : 'Scan Contact QR Code'),
+        ),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.pop(context),

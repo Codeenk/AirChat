@@ -29,7 +29,11 @@ with a small trusted surface and honest limits.
 
 ### 2.2 Transport / network secrecy
 - Message content should be encrypted before it leaves the device.
-- Each message should use fresh keys where the design intends forward secrecy.
+- Each 1:1 message should use fresh key material. Note the precise guarantee:
+  fresh per-message keys bind a compromise to a single message, but because the
+  recipient decrypts with a long-term key that never ratchets, this is **not**
+  forward secrecy against long-term key compromise. See
+  `SECURITY_DESIGN.md` §3.1.
 - Authentication should be used so a relay or network adversary cannot easily
   inject or impersonate traffic.
 
@@ -49,6 +53,22 @@ The app should actively reduce common practical leaks:
 - debug/log paths that might reveal sensitive material
 - locally stored artifacts that could be extracted later by an attacker with
   access to the device filesystem
+
+### 2.5 Key substitution by the relay
+
+Because the relay is also the directory, it is the party that tells each device
+which keys belong to a contact. A curious or compromised relay could answer with
+its own keys and read everything in the middle. Encryption cannot detect this on
+its own — the attacker supplied the keys.
+
+AirChat mitigates it with safety numbers (`SECURITY_DESIGN.md` §3.4): a 60-digit
+code over both parties' identity and signing keys, compared out of band, and
+recorded locally so a later key change raises a visible warning instead of a
+stale verification badge.
+
+The honest bound: this defends against the relay only for contacts the user has
+actually verified. For an unverified contact the relay remains able to substitute
+keys, and the app says so rather than implying otherwise.
 
 ## 3. Threats this app does **not** defeat on its own
 

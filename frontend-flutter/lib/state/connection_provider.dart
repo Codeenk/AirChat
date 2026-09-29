@@ -290,6 +290,27 @@ class MessageRouter {
             // If we already have this group locally, preserve the existing groupKey
             // unless the incoming payload carries a new one (key rotation).
             final existing = await GroupDao().getGroupById(gid);
+            final incomingVersion = decoded['keyVersion'] as int?;
+            final carriesKey =
+                receivedGroupKey != null && receivedGroupKey.isNotEmpty;
+            // Replay guard. The relay is unordered and replayable, so an old
+            // key-carrying control can arrive after a newer one. Applying it
+            // would restore a superseded group key and silently undo the
+            // rotation that revoked a removed member. A generation that is not
+            // newer than what we hold is dropped.
+            // Unversioned controls (legacy clients) are still accepted so the
+            // rollout does not break groups that predate versioning.
+            if (carriesKey &&
+                !acceptsControlVersion(
+                  localVersion: existing?.keyVersion ?? 0,
+                  incomingVersion: incomingVersion,
+                )) {
+              CrashReporter.recordError(
+                error: 'stale key-carrying group control dropped for $gid',
+                source: 'group-version',
+              );
+              return;
+            }
             final effectiveKey = receivedGroupKey ?? existing?.groupKey;
             await GroupDao().insertGroup(
               Group(
@@ -298,6 +319,7 @@ class MessageRouter {
                 memberUids: memberUids.isEmpty ? [uid, senderUid] : memberUids,
                 createdAt: timestamp,
                 groupKey: effectiveKey,
+                keyVersion: incomingVersion ?? existing?.keyVersion ?? 0,
               ),
             );
             // A kick changed the roster: survivors must rotate the key so the

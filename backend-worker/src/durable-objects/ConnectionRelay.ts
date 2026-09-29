@@ -13,6 +13,7 @@ interface SocketLease {
 
 import { sendSilentWake, sendDeliveryFailedWake, sendGroupWake } from "../utils/fcm";
 import { verifyEd25519Signature } from "../utils/crypto-verify";
+import * as membership from "../db/membership";
 
 const TTL_MS = 24 * 60 * 60 * 1000; // 24h ephemeral cache — the only server storage
 const LEASE_MS = 90 * 1000; // socket lease: ping every 25s refreshes; >90s = dead wire
@@ -150,22 +151,26 @@ export class ConnectionRelay {
 
         // ─── GROUP PACKET: one encrypted payload → stored once, woken to all members ───
         if (data.action === "send_group_packet") {
-          const { groupId, groupName, encryptedPayload, packetId, senderName } = data;
+          const { groupId, encryptedPayload, packetId, senderName } = data;
           if (!groupId || !packetId) {
             ws.send(JSON.stringify({ type: "error", message: "Missing groupId or packetId" }));
             return;
           }
 
-          // Store ONE copy in group inbox (keyed by groupId, not by memberUid)
+          // Store ONE copy in group inbox (keyed by groupId, not by memberUid).
+          // No group name: the relay routes this, it does not label it.
           const groupKey = `grp:${groupId}:${packetId}`;
           await this.state.storage.put(groupKey, {
             id: packetId,
             senderUid: uid,
             groupId,
-            groupName: groupName || "",
             payload: encryptedPayload,
             timestamp: Date.now(),
-          } as EphemeralPacket & { groupId: string; groupName: string });
+          } as EphemeralPacket & { groupId: string });
+
+          // A send touches the group, so refresh the roster's expiry before
+          // reading it — an active group's routing state never lapses.
+          if (this.env?.DB) await membership.refreshGroupMembership(this.env.DB, groupId);
 
           // Look up all group members from D1 and wake each offline member
           const members = await this.getGroupMembers(groupId);
@@ -180,7 +185,6 @@ export class ConnectionRelay {
                 senderUid: uid,
                 senderName: senderName || "",
                 groupId,
-                groupName: groupName || "",
                 packetId,
                 payload: encryptedPayload,
                 timestamp: Date.now(),
@@ -199,10 +203,11 @@ export class ConnectionRelay {
 
         // ─── REGISTER GROUP: store membership for wake routing ───
         if (data.action === "register_group") {
-          const { groupId, groupName, memberUids } = data;
+          const { groupId, memberUids } = data;
           if (!groupId || !Array.isArray(memberUids)) return;
+          if (!this.env?.DB) return;
 
-          await this.registerGroupMembership(groupId, groupName || "", memberUids);
+          await membership.upsertGroupMembership(this.env.DB, groupId, memberUids);
           console.log(`[relay] registered group ${groupId}: ${memberUids.length} members`);
           return;
         }
@@ -333,7 +338,6 @@ export class ConnectionRelay {
           senderUid: msg.senderUid,
           senderName: "",
           groupId: msg.groupId || groupId,
-          groupName: msg.groupName || "",
           packetId: msg.id,
           payload: msg.payload,
           timestamp: msg.timestamp,
@@ -347,46 +351,22 @@ export class ConnectionRelay {
     }
   }
 
-  // ─── GROUP MEMBERSHIP: D1 storage ───
-  private async registerGroupMembership(
-    groupId: string,
-    groupName: string,
-    memberUids: string[]
-  ): Promise<void> {
-    if (!this.env.DB) return;
-    try {
-      // Upsert all members — use batch for efficiency
-      const stmts = memberUids.map(uid =>
-        this.env.DB.prepare(
-          `INSERT OR REPLACE INTO group_memberships (group_id, member_uid, group_name, created_at)
-           VALUES (?, ?, ?, ?)`
-        ).bind(groupId, uid, groupName, Date.now())
-      );
-      await this.env.DB.batch(stmts);
-    } catch (e) {
-      console.log(`[relay] register_group failed: ${e}`);
-    }
-  }
-
+  // ─── GROUP MEMBERSHIP: transient routing state in D1 (see db/membership.ts) ───
+  // Never throws: a missing/erroring DB degrades to "no known groups", which
+  // is what an unregistered client sees anyway.
   private async getGroupMembers(groupId: string): Promise<string[]> {
-    if (!this.env.DB) return [];
+    if (!this.env?.DB) return [];
     try {
-      const rows = await this.env.DB.prepare(
-        "SELECT member_uid FROM group_memberships WHERE group_id = ?"
-      ).bind(groupId).all();
-      return rows.results?.map((r: any) => r.member_uid as string) ?? [];
+      return await membership.getGroupMemberUids(this.env.DB, groupId);
     } catch {
       return [];
     }
   }
 
   private async getUserGroupIds(uid: string): Promise<string[]> {
-    if (!this.env.DB) return [];
+    if (!this.env?.DB) return [];
     try {
-      const rows = await this.env.DB.prepare(
-        "SELECT DISTINCT group_id FROM group_memberships WHERE member_uid = ?"
-      ).bind(uid).all();
-      return rows.results?.map((r: any) => r.group_id as string) ?? [];
+      return await membership.getUserGroupIds(this.env.DB, uid);
     } catch {
       return [];
     }

@@ -1,5 +1,9 @@
 import { ConnectionRelay } from "./durable-objects/ConnectionRelay";
 import {
+  upsertGroupMembership,
+  pruneExpiredMemberships,
+} from "./db/membership";
+import {
   handleRegister,
   handleUpdateFcmToken,
   handleTestPush,
@@ -116,7 +120,6 @@ async function handleRegisterGroup(request: any, env: Env): Promise<Response> {
     const body = (await request.json()) as {
       uid?: string;
       groupId?: string;
-      groupName?: string;
       memberUids?: string[];
       signature?: string;
     };
@@ -140,14 +143,10 @@ async function handleRegisterGroup(request: any, env: Env): Promise<Response> {
       });
     }
 
-    const now = Date.now();
-    const stmts = body.memberUids.map((uid: string) =>
-      env.DB.prepare(
-        `INSERT OR REPLACE INTO group_memberships (group_id, member_uid, group_name, created_at)
-         VALUES (?, ?, ?, ?)`
-      ).bind(body.groupId!, uid, body.groupName || "", now)
-    );
-    await env.DB.batch(stmts);
+    // Roster is routing state with an expiry — no group name, no permanent
+    // record. Expired rows are swept here rather than by a scheduled job.
+    await upsertGroupMembership(env.DB, body.groupId, body.memberUids);
+    await pruneExpiredMemberships(env.DB);
 
     return new Response(JSON.stringify({ ok: true, members: body.memberUids.length }), {
       headers: { "Content-Type": "application/json" },
