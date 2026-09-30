@@ -103,8 +103,12 @@ export class ConnectionRelay {
         return new Response("Expected Upgrade: websocket", { status: 426 });
       }
 
-      const uid = url.searchParams.get("uid");
-      if (!uid) return new Response("Missing UID", { status: 400 });
+      // `uid` is optional. A sealed-mode socket addresses devices by opaque tag
+      // and has no identity to prove, so it connects without one; it is then
+      // confined to the tag-scoped sealed actions, because `hasIdentity` below
+      // makes uid auth impossible for it. Legacy uid addressing still requires
+      // the parameter.
+      const uid = url.searchParams.get("uid") ?? "";
 
       const webSocketPair = new WebSocketPair();
       const [client, server] = Object.values(webSocketPair);
@@ -130,6 +134,9 @@ export class ConnectionRelay {
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
     let authed = false;
+    // A socket that connected without ?uid has no identity to prove, so it can
+    // never satisfy the challenge and can never reach any uid-addressed action.
+    const hasIdentity = uid.length > 0;
     try {
       ws.send(JSON.stringify({ type: "auth_challenge", nonce }));
     } catch { /* socket already dead */ }
@@ -147,7 +154,7 @@ export class ConnectionRelay {
         const data = JSON.parse(event.data as string);
 
         if (data.action === "auth") {
-          const ok = await this.verifySocketAuth(uid, nonce, data.signature);
+          const ok = hasIdentity && (await this.verifySocketAuth(uid, nonce, data.signature));
           if (ok) {
             authed = true;
             clearTimeout(authTimer);
@@ -174,8 +181,13 @@ export class ConnectionRelay {
         // unauthenticated, so gating its ping on `authed` would mean its lease
         // never refreshed and the wire was evicted after 90s.
         if (data.action === "ping") {
-          const lease = this.sockets.get(uid);
-          if (lease) lease.lastSeen = Date.now();
+          // Only refresh the uid lease if this socket actually authenticated as
+          // it. Without the `authed` check, anyone could open `?uid=victim` and
+          // keep a stranger's wire lease alive by pinging it.
+          if (authed) {
+            const lease = this.sockets.get(uid);
+            if (lease && lease.ws === ws) lease.lastSeen = Date.now();
+          }
           const myTags = this.wsTags.get(ws);
           if (myTags !== undefined) {
             for (const t of myTags) {
