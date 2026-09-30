@@ -123,11 +123,16 @@ npx wrangler d1 migrations apply airchat-identity --remote
 npx wrangler deploy
 ```
 
-`0001_group_memberships_expiry.sql` (from v1.7.0) and
-`0002_key_packages.sql` only *add* tables or rebuild one that no read depended
-on, so applying them before or after the deploy is safe either way. Until the
-deploy lands, publishing a key package simply fails and every new conversation
-stays on the legacy scheme — no breakage, just no ratchet yet.
+Apply migrations **before** deploying, always: `0001` rebuilds
+`group_memberships` to add `expires_at`, and the deployed code only reads that
+column once the matching worker is live. `0002` is purely additive.
+
+The currently deployed worker does not read `expires_at` and treats the group
+name as optional, so the migration is safe to apply to today's production
+schema — old code against the new table still works.
+
+Until the deploy lands, publishing a key package simply fails: every new
+conversation falls back to the legacy scheme. No breakage, just no ratchet yet.
 
 ## 7. What is still open, stated plainly
 
