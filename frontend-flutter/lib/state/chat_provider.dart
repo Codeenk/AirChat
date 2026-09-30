@@ -5,10 +5,13 @@ import 'package:cryptography/cryptography.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
+import '../core/crypto/delivery_tag.dart';
 import '../core/crypto/key_store.dart';
 import '../core/crypto/ratchet_session.dart';
+import '../core/crypto/sealed_sender.dart';
 import '../core/crypto/signing_engine.dart';
 import '../core/database/daos/message_dao.dart';
+import '../core/network/websocket_client.dart';
 import '../models/chat_thread.dart';
 import '../models/message_payload.dart';
 import 'connection_provider.dart';
@@ -168,6 +171,32 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     });
   }
 
+  /// Tells the author of [message] that it was read, on the transport it
+  /// arrived by.
+  ///
+  /// A sealed message names no sender, so its receipt quotes the return tag its
+  /// author sent us rather than a uid. That is what the tag is for: a receipt
+  /// has to travel back somehow, and every alternative (a uid, a per-peer
+  /// pseudonym) is an edge the relay could record.
+  Future<void> _sendReadReceipt({
+    required WebSocketTunnelClient ws,
+    required ChatMessage message,
+  }) async {
+    final replyTag = message.replyTag;
+    if (replyTag == null || replyTag.isEmpty) {
+      ws.sendReadReceipt(packetId: message.id, senderUid: message.senderUid);
+      return;
+    }
+    final ourTag = await DeliveryTagRegistry.instance.currentTag();
+    if (ourTag == null) return;
+    SealedSender.instance.receipt(
+      client: ws,
+      tag: ourTag,
+      packetId: message.id,
+      replyTag: replyTag,
+    );
+  }
+
   /// Marks all incoming 'delivered' messages in this chat as read: sends
   /// read receipts, updates the DB and patches local state. Called when the
   /// chat screen is opened (or new messages arrive while it's open).
@@ -182,7 +211,7 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
 
     for (final m in state) {
       if (!m.isMe && m.status == 'delivered') {
-        ws.sendReadReceipt(packetId: m.id, senderUid: m.senderUid);
+        await _sendReadReceipt(ws: ws, message: m);
         await dao.updateMessageStatus(m.id, 'read');
         updated.add(m.copyWith(status: 'read'));
         changed = true;
@@ -224,8 +253,8 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
         recipientPublicKeyBase64: recipientPublicKeyBase64,
         senderKeyPair: senderKeyPair,
       );
-      final ws = ref.read(websocketClientProvider(senderUid));
-      ws.sendPacket(
+      await _dispatchDirect(
+        senderUid: senderUid,
         recipientUid: msg.recipientUid,
         encryptedPayload: encryptedPayload,
         packetId: msg.id,
@@ -260,6 +289,14 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
       }
     } catch (_) {}
 
+    // Advertise the tag this device is reachable on, *inside* the encrypted
+    // payload. It is how a peer learns where to send sealed replies — and it is
+    // the authoritative source, unlike the `reply` field the relay supplies on
+    // the sealed wire, which a hostile relay could substitute. Sent on the
+    // legacy path too, so an upgraded peer can seal to us as soon as it can even
+    // while this conversation is still on the named transport.
+    final ourTag = await DeliveryTagRegistry.instance.currentTag();
+
     final messageJson = jsonEncode({
       'text': text,
       'type': type,
@@ -267,6 +304,7 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
       if (secretKeyHex != null) 'secretKeyHex': secretKeyHex,
       if (nonceHex != null) 'nonceHex': nonceHex,
       if (sig.isNotEmpty) 'sig': sig,
+      if (ourTag != null) 'dt': ourTag,
       if (replyTo != null)
         'replyTo': {
           'id': replyTo.id,
@@ -392,13 +430,44 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
       senderKeyPair: senderKeyPair,
     );
 
-    final ws = ref.read(websocketClientProvider(senderUid));
-    ws.sendPacket(
+    await _dispatchDirect(
+      senderUid: senderUid,
       recipientUid: recipientUid,
       encryptedPayload: encryptedPayload,
       packetId: packetId,
     );
     _scheduleSendTimeout(packetId);
+  }
+
+  /// Sends an encrypted 1:1 payload: sealed when both ends can, named otherwise.
+  ///
+  /// Decided per message rather than per chat, because "can this message travel
+  /// without naming its sender?" is a property of the *payload* (it must
+  /// authenticate its own sender) and of both devices' current tags, not of the
+  /// conversation. A peer with no tag, or a payload on the legacy X25519 scheme,
+  /// silently falls back to the named transport — which is what makes rollout
+  /// gradual and means a failure here degrades metadata privacy for one message
+  /// instead of breaking delivery (`SECURITY_SEALED_SENDER.md` §6).
+  Future<void> _dispatchDirect({
+    required String senderUid,
+    required String recipientUid,
+    required String encryptedPayload,
+    required String packetId,
+  }) async {
+    final ws = ref.read(websocketClientProvider(senderUid));
+    if (await SealedSender.instance.send(
+      client: ws,
+      peerUid: recipientUid,
+      packetId: packetId,
+      body: encryptedPayload,
+    )) {
+      return;
+    }
+    ws.sendPacket(
+      recipientUid: recipientUid,
+      encryptedPayload: encryptedPayload,
+      packetId: packetId,
+    );
   }
 
   Future<void> sendMessage({
@@ -469,8 +538,8 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
       senderKeyPair: senderKeyPair,
     );
 
-    final ws = ref.read(websocketClientProvider(senderUid));
-    ws.sendPacket(
+    await _dispatchDirect(
+      senderUid: senderUid,
       recipientUid: recipientUid,
       encryptedPayload: encryptedPayload,
       packetId: packetId,

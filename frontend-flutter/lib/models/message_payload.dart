@@ -22,6 +22,12 @@ class ChatMessage {
   final String? groupId;
   final String? groupSenderName;
 
+  /// Sealed-sender return path for an inbound message: the sender's delivery
+  /// tag, which is the only way back to them when the relay never learned who
+  /// they were. Null for anything that arrived over the named transport, and
+  /// null on our own messages.
+  final String? replyTag;
+
   ChatMessage({
     required this.id,
     required this.chatId,
@@ -41,6 +47,7 @@ class ChatMessage {
     this.replyIsMe,
     this.groupId,
     this.groupSenderName,
+    this.replyTag,
   });
 
   bool get hasReply => replyToId != null && replyToId!.isNotEmpty;
@@ -64,6 +71,7 @@ class ChatMessage {
     replyIsMe: replyIsMe,
     groupId: groupId,
     groupSenderName: groupSenderName,
+    replyTag: replyTag,
   );
 
   Map<String, dynamic> toMap() => {
@@ -85,6 +93,7 @@ class ChatMessage {
     'reply_is_me': (replyIsMe == null) ? null : (replyIsMe! ? 1 : 0),
     'group_id': groupId,
     'group_sender_name': groupSenderName,
+    'reply_tag': replyTag,
   };
 
   factory ChatMessage.fromMap(Map<String, dynamic> map) => ChatMessage(
@@ -106,5 +115,6 @@ class ChatMessage {
     replyIsMe: (map['reply_is_me'] == null) ? null : (map['reply_is_me'] == 1),
     groupId: map['group_id'],
     groupSenderName: map['group_sender_name'],
+    replyTag: map['reply_tag'],
   );
 }

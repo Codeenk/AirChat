@@ -7,6 +7,42 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 enum TunnelState { disconnected, connecting, connected }
 
+/// The sealed-sender slice of the tunnel.
+///
+/// Declared separately from [WebSocketTunnelClient] so the parts of sealed
+/// delivery that are pure protocol — the tag registry and the send/receive
+/// service — can be exercised against a fake transport. Constructing the real
+/// client is not free (it binds connectivity and reconnect timers), and a test
+/// that needs a socket to check a tag rotation would not be testing the tag
+/// rotation.
+abstract class SealedTransport {
+  /// Claims [tag] on this connection, optionally with the FCM token to wake
+  /// this device for mail addressed to it.
+  void sealRegister({required String tag, String? fcmToken});
+
+  /// Sends an opaque [body] to [toTag], quoting [replyTag] as the return path.
+  void sendSealed({
+    required String toTag,
+    required String replyTag,
+    required String packetId,
+    required String body,
+  });
+
+  /// Confirms receipt of a packet so the relay can drop its copy.
+  void sealAck({
+    required String tag,
+    required String packetId,
+    String? replyTag,
+  });
+
+  /// Read receipt, routed by tag exactly like [sealAck].
+  void sealReceipt({
+    required String tag,
+    required String packetId,
+    String? replyTag,
+  });
+}
+
 class PacketStatusReceipt {
   final String packetId;
   final String status; // 'relayed', 'queued_ephemeral', 'delivered'
@@ -14,7 +50,79 @@ class PacketStatusReceipt {
   PacketStatusReceipt({required this.packetId, required this.status});
 }
 
-class WebSocketTunnelClient {
+/// Collapses a burst of sealed packets into one delayed submission.
+///
+/// Submission *timing* is a metadata channel even when the bytes are opaque: a
+/// message leaving this device the instant the user hits send tells a watching
+/// relay roughly what the user is doing and pairs up with the arrival it causes
+/// a moment later at the other end. So an outbound sealed packet is held for a
+/// short random interval and flushed together with anything else composed in
+/// that window, which makes submission time neither send time nor unique to one
+/// message (`SECURITY_SEALED_SENDER.md` §8).
+///
+/// Deliberately small: this is jitter, not a mixnet. A messenger that added
+/// seconds of latency to every message would not be used, and an unused
+/// messenger protects nobody.
+class SealedBatcher {
+  SealedBatcher({
+    required this.emit,
+    Random? random,
+    Timer Function(Duration duration, void Function() callback)? timerFactory,
+  }) : _random = random ?? Random(),
+       _timerFactory = timerFactory ?? ((d, f) => Timer(d, f));
+
+  /// Called once per pending packet, in submission order, when the batch
+  /// flushes. Wired to the socket by [WebSocketTunnelClient].
+  final void Function(Map<String, dynamic> packet) emit;
+
+  final Random _random;
+  final Timer Function(Duration duration, void Function() callback)
+  _timerFactory;
+
+  final List<Map<String, dynamic>> _pending = [];
+  Timer? _timer;
+
+  /// Minimum hold. Long enough to overlap a second message typed right after
+  /// the first, short enough that "instant" messaging still feels instant.
+  static const int minDelayMs = 120;
+
+  /// Maximum hold. Beyond this the sender would notice the lag.
+  static const int maxDelayMs = 600;
+
+  /// Pure, unit-testable: the random hold applied to one batch.
+  static int delayMs(Random random) =>
+      minDelayMs + random.nextInt(maxDelayMs - minDelayMs + 1);
+
+  int get pending => _pending.length;
+
+  void submit(Map<String, dynamic> packet) {
+    _pending.add(packet);
+    // One timer per batch, armed by the first packet: later arrivals join the
+    // batch already in flight rather than pushing the flush back forever.
+    _timer ??= _timerFactory(Duration(milliseconds: delayMs(_random)), _flush);
+  }
+
+  void flushNow() => _flush();
+
+  void _flush() {
+    _timer?.cancel();
+    _timer = null;
+    if (_pending.isEmpty) return;
+    final batch = List<Map<String, dynamic>>.from(_pending);
+    _pending.clear();
+    for (final packet in batch) {
+      emit(packet);
+    }
+  }
+
+  void dispose() {
+    _timer?.cancel();
+    _timer = null;
+    _pending.clear();
+  }
+}
+
+class WebSocketTunnelClient implements SealedTransport {
   final String baseWsUrl;
   final String uid;
 
@@ -57,6 +165,14 @@ class WebSocketTunnelClient {
   /// then let the normal reconnect cycle retry. Cooldown enforced by caller.
   final Future<void> Function()? onAuthFailure;
 
+  /// Fired once per successful authentication (challenge or legacy handshake).
+  ///
+  /// This is where the device re-claims its sealed-sender delivery tags: the
+  /// relay holds a tag only for the lifetime of the row, and a tag claim is
+  /// self-healing *because* every connect re-registers, so a registered socket
+  /// is a prerequisite for being reachable at all.
+  final Future<void> Function()? onAuthenticated;
+
   /// True once the relay has accepted our auth. Sends are held until authed
   /// so nothing is lost to the 10s unauthenticated window.
   bool _authed = false;
@@ -71,6 +187,7 @@ class WebSocketTunnelClient {
     required this.uid,
     this.signChallenge,
     this.onAuthFailure,
+    this.onAuthenticated,
   }) {
     _connectivitySub = Connectivity().onConnectivityChanged.listen((results) {
       final hasNet = results.any(
@@ -213,9 +330,113 @@ class WebSocketTunnelClient {
     _flushOutboundQueue();
   }
 
+  bool _authNotified = false;
+
   void _setAuthed(bool value) {
     _authed = value;
-    if (value) _flushOutboundQueue();
+    if (!value) return;
+    _flushOutboundQueue();
+    if (_authNotified) return;
+    _authNotified = true;
+    try {
+      onAuthenticated?.call();
+    } catch (_) {}
+  }
+
+  // ─── sealed sender ───
+
+  late final SealedBatcher _sealedBatcher = SealedBatcher(emit: _writeSealed);
+
+  /// Packets held by the timing batch — exposed so a test can assert the hold
+  /// actually happens rather than measuring wall-clock timing.
+  int get pendingSealedCount => _sealedBatcher.pending;
+
+  /// Test seam: submit the current batch without waiting out the jitter.
+  void flushSealedForTest() => _sealedBatcher.flushNow();
+
+  /// Claims a delivery tag on this socket.
+  ///
+  /// Sent immediately rather than batched — it is addressability, not traffic,
+  /// and a batch delay would just widen the window in which mail addressed to
+  /// this device has nowhere to land. Not authenticated: a tag confers no
+  /// privilege, it only means "deliver what is addressed to this tag"
+  /// (`SECURITY_SEALED_SENDER.md` §4.1).
+  @override
+  void sealRegister({required String tag, String? fcmToken}) {
+    final packet = {
+      'action': 'seal_register',
+      'tag': tag,
+      if (fcmToken != null && fcmToken.isNotEmpty) 'fcm': fcmToken,
+    };
+    _writeSealed(packet);
+  }
+
+  /// Sends a sealed packet: addressed to the recipient's tag, with our own tag
+  /// as the return path, and no uid in either direction.
+  @override
+  void sendSealed({
+    required String toTag,
+    required String replyTag,
+    required String packetId,
+    required String body,
+  }) {
+    _sealedBatcher.submit({
+      'action': 'seal',
+      'to': toTag,
+      'reply': replyTag,
+      'packetId': packetId,
+      'body': body,
+    });
+  }
+
+  /// Acknowledges a sealed packet, which lets the relay drop its copy.
+  ///
+  /// No identity is asserted — only the opaque packet and the tag it arrived
+  /// on — so this needs no auth and grants no power over anyone else's mail.
+  @override
+  void sealAck({
+    required String tag,
+    required String packetId,
+    String? replyTag,
+  }) {
+    _writeControl({
+      'action': 'seal_ack',
+      'tag': tag,
+      'packetId': packetId,
+      'reply': ?replyTag,
+    });
+  }
+
+  /// Read receipt on the sealed path, routed by tag like [sealAck].
+  @override
+  void sealReceipt({
+    required String tag,
+    required String packetId,
+    String? replyTag,
+  }) {
+    _writeControl({
+      'action': 'seal_receipt',
+      'tag': tag,
+      'packetId': packetId,
+      'reply': ?replyTag,
+    });
+  }
+
+  /// Writes one packet out, or holds it for the reconnect flush.
+  void _writeSealed(Map<String, dynamic> packet) {
+    if (_state == TunnelState.connected && _authed) {
+      _channel?.sink.add(jsonEncode(packet));
+    } else {
+      _enqueue(packet);
+      connect();
+    }
+  }
+
+  /// Best-effort control write: acks and receipts are worthless late, and a
+  /// queued ack replayed after a reconnect would delete mail we already have.
+  void _writeControl(Map<String, dynamic> packet) {
+    if (_state != TunnelState.connected || !_authed) return;
+    _channel?.sink.add(jsonEncode(packet));
   }
 
   void sendPacket({
@@ -322,6 +543,7 @@ class WebSocketTunnelClient {
     final wasAuthed = _authed;
     final startedAt = _connectStartedAt;
     _authed = false;
+    _authNotified = false;
     _sawAuthChallenge = false;
     _legacyRelayTimer?.cancel();
     _setState(TunnelState.disconnected);
@@ -363,6 +585,7 @@ class WebSocketTunnelClient {
     _legacyRelayTimer?.cancel();
     _pingTimer?.cancel();
     _reconnectTimer?.cancel();
+    _sealedBatcher.dispose();
     _channel?.sink.close();
     _stateController.close();
     _messageController.close();

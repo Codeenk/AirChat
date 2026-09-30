@@ -1,22 +1,40 @@
 # AirChat — Sealed Sender (metadata confidentiality)
 
-Status: **relay implemented; client wiring in progress.** This document
-describes the design; the code is the authority and this file must be updated
-whenever the wire format changes.
+Status: **1:1 sealed delivery implemented end to end** (relay + client); group
+sealed delivery and cover traffic are not. This document describes the design;
+the code is the authority and this file must be updated whenever the wire format
+changes.
 
-Landed so far:
+Landed:
 
 * relay — tag registry, sealed send/deliver/ack/receipt, uid-free wake,
   mixing batch, self-subscribed groups, 24h sweep (`ConnectionRelay.ts`,
   `src/db/delivery_tags.ts`, migration `0003_sealed_sender.sql`);
-* client — `RatchetBundle.deliveryTag` (optional, so older bundles still
-  decode) and the delivery tag field on the wire.
+* client — tag lifecycle (`delivery_tag.dart`), sealed send and trial-decrypt
+  attribution (`sealed_sender.dart`), the tunnel actions plus client-side jitter
+  and batching (`websocket_client.dart`), send/receive/read-receipt wiring
+  (`chat_provider.dart`, `connection_provider.dart`), the `sealed_wake` push
+  path (`push_service.dart`), and `RatchetBundle.deliveryTag` / the `dt` field
+  inside 1:1 payloads;
+* tests — `test/sealed_sender_test.dart` (28 cases), including a real two-device
+  ratchet exchange through the sealed path.
 
-Not yet landed: the client send/receive/background wiring and the tag lifecycle
-(`delivery_tag.dart`), the client-side jitter and cover traffic, and tests for
-the sealed path. Until those land, sealed delivery is **not** in use by any
-client — every conversation still runs the legacy named transport, and leaks
-#1–#8 in the table below therefore still apply on the wire.
+Not yet landed: **group** sealed delivery (the relay half exists and is
+unused — a group packet still travels the named path, so leaks #7/#8/#9 below
+still apply to groups), cover traffic (§8), and a background fetch that decrypts
+a sealed wake to preview its content (§4.5 explains why that is deliberately
+deferred).
+
+What that means in practice: in a 1:1 conversation between two devices on this
+build, **every message after the first one in each direction** is sealed — the
+relay sees two opaque tags and no uid. The first message of a pair still names
+its sender (§6), which is the price of never dropping a message into the expiry
+sweep. A conversation with a device on an older build, or a group, is not sealed
+at all, and falls back to the named transport exactly as before.
+
+So: leaks #1–#6 and #10 are closed for 1:1 traffic after the first exchange;
+they are not closed for a pair's first message, for groups, or for
+mixed-version peers.
 
 Related: `SECURITY.md` (storage rules), `SECURITY_THREAT_MODEL.md` (adversary),
 `SECURITY_DESIGN.md` (crypto per chat), `SECURITY_GROUP_CRYPTO.md` (MLS).
@@ -173,11 +191,21 @@ Google therefore learns *that* a device has mail, never *who* it is from.
 
 The transport no longer names the sender, so the client derives it:
 
+* **1:1 Double Ratchet** — by trial decryption against our own sessions, or,
+  for a first message, by matching the identity key inside the pre-key envelope
+  against the contacts whose keys we hold (§5.4).
 * **MLS groups** — resolved from the MLS ratchet tree / credential, as the
-  ciphertext already binds the sender's leaf. No hint needed.
-* **1:1 Double Ratchet** — resolved via the `hint` (§5.4).
+  ciphertext already binds the sender's leaf.
 * **Legacy X25519** — carries no sender identity inside the payload, so it
   **cannot** ride sealed delivery; it keeps the legacy transport (§6).
+
+Either way the *decryption* decides, not the relay: a payload that opens against
+no session and matches no held identity key is left on the relay, unacked,
+rather than being attributed to a guess.
+
+The cost of that rule is stated in §7.6: a sender we hold no identity key for
+cannot be attributed at all — even though the message would decrypt under any
+label (§4.3) — so the packet stays queued instead of appearing misattributed.
 
 ### 5.2 Why the reply path is a tag, not a uid
 
@@ -187,25 +215,38 @@ stable pseudonymous edge. Using the sender's own **device tag** means the relay
 learns, at most, "tag R and tag B are in contact" — a graph of random numbers
 with no identity attached.
 
-### 5.3 Rotating tags
+### 5.3 Rotating tags, and grace
 
-Tags rotate on a timer and on every app start, so a long-lived tag cannot be
-used as a stable device identifier across sessions. A rotated tag is published
-to contacts via the directory and to the relay at registration; the old tag is
-dropped with its TTL.
+A tag rotates **once a day** (`DeliveryTag.rotateAfter`), so it cannot serve as
+a stable device identifier across sessions. A rotated tag is advertised in the
+next published bundle and inside the next 1:1 payload (`dt`); the old tag is
+dropped once it falls outside a **7-day grace window** (`keepPrevious`), after
+which it stops being claimable and the relay's row TTL eventually removes it.
+
+Only the tag from the payload is *used* to send (§6): the bundle advertises a
+tag, and the payload proves reachability. Both go out, and only the second one
+gates anything.
+
+Rotation cannot be atomic between two devices, so all tags inside the window
+stay registered on every connect and remain valid addresses. That is also why a
+seal that arrives on a retired tag is delivered normally: receiving does not
+depend on which tag it came to at all — it depends only on whether a session can
+open the body.
 
 ### 5.4 Sender hints
 
-`hint = HKDF-SHA256(ikm = session secret, info = "airchat-sender-hint", len = 16)`.
+**Not used.** `hint` remains reserved and unpopulated; the relay passes it
+through, and the client neither sends nor reads it.
 
-Both peers can compute it once a session exists; the recipient keeps a
-`hint → peer` cache so attribution is O(1) instead of trial-decrypting against
-every stored session. To anyone else — including the relay — it is 16 opaque
-bytes, and it changes when the session's keys change.
+The original proposal above — `HKDF(session secret)` — cannot be computed,
+because libsignal does not expose a session's root key. The obvious substitute,
+a hint derived from the two *identity keys*, is worse than nothing: identity keys
+are public in the directory, so the relay could compute the hint for every
+candidate pair and match it, rebuilding exactly the graph this design removes.
 
-The hint is an *optimisation, not an authority*: if it is missing or unknown, the
-client falls back to trying its active sessions, and the payload's own
-authentication is what actually decides who the sender is.
+So attribution is by trial decryption (§5.1), which is not merely a fallback but
+the authority: see [SealedSender.open] for why a wrong candidate cannot succeed
+and cannot damage the ratchet it was tried against.
 
 ## 6. Migration and backwards compatibility
 
@@ -218,6 +259,38 @@ against the new relay and vice versa:
 | sealed | legacy | relay resolves the tag and attaches `senderUid` so the old client can attribute |
 | legacy | any | legacy `send_packet` / `send_group_packet`, sender still named |
 
+The choice is made **per message, on the client** (`SealedSender.send`), and it
+is a `false` — not an exception — whenever this message cannot ride sealed: no
+tag for us, no tag for the peer, or a payload that does not authenticate its own
+sender. A conversation therefore moves onto the sealed path the first time both
+ends can, with no negotiation, no flag day, and no way for a failure to become a
+delivery failure.
+
+Two things travel out of band of the wire, both of them *inside* other
+encrypted material: the sender's tag in the bundle they publish, and — because a
+bundle is only fetched by whoever starts a session — the same tag inside every
+1:1 payload as `dt`, which is how the *responder* learns where to seal its
+replies. Nothing about a tag is ever published where the relay can read it.
+
+### 6.1 The send gate: proof before sealing
+
+A message is sealed only when the peer's tag came from a payload we decrypted.
+That one condition carries two guarantees at once:
+
+* **They can read it.** Their ratchet message means they fetched our bundle, so
+  they hold our identity key and can attribute a sealed message from us (§7.6).
+  Sealing to them earlier would risk the worst possible failure — not a leak, but
+  a message that expires unread because its recipient could not say who sent it.
+* **We know where it goes.** Their latest tag is the one in their latest
+  payload, which is also how a rotation propagates.
+
+A bundle tag is therefore advertised but **not** consumed. The cost is exact and
+worth stating plainly: **the first message of any pair still names its sender.**
+The upside is that a one-sided contact — someone who added us and messages first,
+which is the ordinary way a conversation starts — cannot lose messages to this
+feature. Everything from the first reply onward is sealed, in both directions,
+or for as long as the peer's build speaks `dt`.
+
 Sealing only becomes real once **both** ends are new, which is exactly when the
 payload can self-attribute. A peer that has published no tag is simply messaged
 the legacy way. This makes rollout gradual and self-healing: no flag day, no
@@ -225,6 +298,31 @@ version lock, and a mixed population degrades to the old behaviour rather than
 breaking.
 
 ## 7. Residual gaps (read this before claiming "unlinkable")
+
+### 7.6 Attribution needs a known identity (1:1, first message)
+
+The first message of a pair is a pre-key message and has no session yet, so the
+identity key inside it is the only thing that can say who sent it — and that
+field is unauthenticated on its own (libsignal says so explicitly). It is
+usable as a *filter* only against an identity we already hold: a contact row
+with that peer's key, which is what adding someone by QR or invite gives us.
+
+Consequences, stated plainly:
+
+* §6.1 is the client rule: seal only to a tag proven by a received payload, so
+  the first message of a pair is named even when it need not be — trade safety
+  for the first edge of every conversation;
+* a pair that added each other mutually (*both* hold the other's identity key)
+  could seal from the first message. The client does not exploit that, because it
+  cannot tell the mutual case from the one-sided one that would break;
+* a sealed first message from someone **not** in our contacts cannot be
+  attributed, and is left on the relay unacked (it is not lost by being
+  misread — it is simply not shown). That is the safe failure, but it is a real
+  gap for unsolicited contact;
+* this is not a bug in the decryption: a pre-key message opens under *any* label
+  we hand libsignal, so an unfiltered trial decrypt would let the first contact
+  in the list claim any message. The filter is what makes trial decryption safe,
+  and `test/sealed_sender_test.dart` pins that behaviour down.
 
 1. **Live correlation.** A relay that terminates both peers' connections can
    correlate by IP address and timing even when every packet is opaque. Sealed
@@ -249,19 +347,21 @@ Chosen deliberately over "do nothing" because send timing is a first-class
 signal; chosen as jitter-and-batching rather than a full mixnet because a
 messenger cannot absorb multi-second delays by default.
 
-* **Client-side jitter** — each outbound sealed packet is delayed by a random
-  interval before submission, so submission time is not send time.
-* **Client-side batching** — packets composed within the same short window are
-  submitted together, so a burst of conversation collapses into fewer,
-  less-informative submissions.
+* **Client-side jitter** — each outbound sealed packet is held for a random
+  120–600 ms (`SealedBatcher`) before submission, so submission time is not send
+  time. ✅
+* **Client-side batching** — packets composed inside that window are flushed
+  together, so a burst of conversation collapses into fewer, less-informative
+  submissions. One timer per batch: a later message joins the flush already in
+  flight instead of pushing it back indefinitely. ✅
 * **Relay-side mixing batch** — sealed packets are held briefly, **shuffled**,
   and delivered on a timer rather than immediately. Arrival order and arrival
   time therefore do not map to delivery order or delivery time, which is what
-  makes the relay's own real-time view far less useful for correlation.
+  makes the relay's own real-time view far less useful for correlation. ✅
 * **Optional cover traffic** — an opt-in setting emits dummy sealed packets at
   a random rate. Recipients drop them on decrypt failure; an observer cannot
   distinguish them from real traffic. Costs battery and data, so it is off by
-  default and documented as such.
+  default and documented as such. ⬜ not implemented.
 
 None of these make correlation impossible for a global observer; they raise its
 cost and its false-positive rate. That is the honest claim.
@@ -277,6 +377,17 @@ server-side records"):
 | DO `grp:<groupTag>:<pid>` | `{pid, body, ts}` | 24h |
 | D1 `device_tags` | `(tag, fcm_token, expires_at)` — **no uid column** | 30d, refreshed on register |
 | D1 `group_subscriptions` | `(group_tag, member_tag, expires_at)` — **no uid column** | 30d, refreshed on send |
+| Device keystore | `airchat_delivery_tags` — the tag list, never leaves the device | local |
+| Device DB `ratchet_store` kind `peer_tag` | the tag we know a peer by, keyed by their uid | local |
+| Device DB `messages.reply_tag` | the return tag of an inbound **sealed** message | local |
+
+The last three are device-side and encrypted at rest with the same key as the
+rest of the app's data. They exist because the sealed path must remember where
+to send a reply and where to send a read receipt; `reply_tag` in particular is
+the reason a receipt can travel back to an author the relay never identified.
+Note what is *not* stored anywhere: any table or row that joins a tag to a uid.
+The peer-tag table is keyed by uid, but it is local only — the relay has no
+counterpart and no way to ask for one.
 
 The absence of a `uid` column in the two new tables is the point: there is no
 row anywhere that joins a tag to a person.
@@ -305,15 +416,32 @@ but it is a real difference from creator-registers-everyone.
 | Tag + subscription storage | `backend-worker/src/db/delivery_tags.ts` | ✅ |
 | Tag + subscription schema | `backend-worker/src/db/migrations/0003_sealed_sender.sql` | ✅ |
 | Uid-free wake | `backend-worker/src/utils/fcm.ts` (`sendSealedWake`) | ✅ |
-| Delivery tag on the bundle | `frontend-flutter/lib/core/crypto/ratchet_session.dart` (`RatchetBundle.deliveryTag`) | ✅ |
-| Tag generation, rotation, registration | `frontend-flutter/lib/core/crypto/delivery_tag.dart` | ⬜ |
-| Client sealed send + attribution | `frontend-flutter/lib/core/crypto/sealed_sender.dart` | ⬜ |
-| Tunnel actions (`seal_register`/`seal`/`seal_ack`/`seal_group`/`group_subscribe`) | `frontend-flutter/lib/core/network/websocket_client.dart` | ⬜ |
-| Send path wiring | `frontend-flutter/lib/state/chat_provider.dart`, `lib/core/crypto/direct_cipher.dart` | ⬜ |
-| Receive/attribution wiring | `frontend-flutter/lib/state/connection_provider.dart` | ⬜ |
-| Background/uid-free push path | `frontend-flutter/lib/core/network/push_service.dart` | ⬜ |
-| Jitter + batching + cover traffic | `frontend-flutter/lib/core/network/websocket_client.dart` | ⬜ |
-| Tests | `frontend-flutter/test/sealed_sender_test.dart` | ⬜ |
+| Delivery tag on the bundle | `frontend-flutter/lib/core/crypto/ratchet_session.dart` (`RatchetBundle.deliveryTag`, `peerTag`, `sessionPeers`) | ✅ |
+| Tag generation, rotation, registration | `frontend-flutter/lib/core/crypto/delivery_tag.dart` | ✅ |
+| Client sealed send + attribution | `frontend-flutter/lib/core/crypto/sealed_sender.dart` | ✅ |
+| Tunnel actions (`seal_register`/`seal`/`seal_ack`/`seal_receipt`) + `SealedTransport` | `frontend-flutter/lib/core/network/websocket_client.dart` | ✅ |
+| Send path wiring | `frontend-flutter/lib/state/chat_provider.dart` (`_dispatchDirect`) | ✅ |
+| Receive/attribution wiring | `frontend-flutter/lib/state/connection_provider.dart` (`_handleSealedMessage`) | ✅ |
+| Read receipts / acks on the sealed path | `chat_provider.dart` (`_sendReadReceipt`), `connection_provider.dart` | ✅ |
+| Uid-free push path | `frontend-flutter/lib/core/network/push_service.dart` (`sealed_wake`) | ✅ generic notification only |
+| Jitter + batching | `frontend-flutter/lib/core/network/websocket_client.dart` (`SealedBatcher`) | ✅ |
+| Cover traffic | — | ⬜ |
+| Group sealed delivery (`seal_group`/`group_subscribe`) | relay ✅ / client ⬜ | ⬜ |
+| Tests | `frontend-flutter/test/sealed_sender_test.dart` | ✅ |
+
+### Known follow-ups, in the order they matter
+
+1. **Group sealed delivery.** The relay already accepts `seal_group` and
+   `group_subscribe`, and the subscription table has no uid column; no client
+   speaks it. Until then a group message still names its sender and its group,
+   and the relay still stores it that way.
+2. **Cover traffic** (§8).
+3. **A contact-independent first message** (§7.6). Options are bounded and
+   unattractive (an anonymity layer, or credentials), which is why the gap is
+   documented rather than papered over.
+4. **A rich sealed wake.** Requires gating notification content behind an app
+   lock first, otherwise a preview just moves the lock-screen leak this design
+   closes.
 
 ### Open design question: sender attribution for 1:1
 

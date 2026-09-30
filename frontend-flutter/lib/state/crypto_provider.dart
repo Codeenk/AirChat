@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/crash/crash_reporter.dart';
+import '../core/crypto/delivery_tag.dart';
 import '../core/crypto/key_store.dart';
 import '../core/crypto/mls_group_service.dart';
 import '../core/crypto/ratchet_session.dart';
@@ -57,6 +58,14 @@ final keyPublicationProvider = Provider((ref) {
         final session = RatchetSession.instance;
         await session.ensureReady();
         if (session.available) {
+          // Mint or rotate the delivery tag before the bundle is built, so what
+          // we publish is the tag this device is actually reachable on. Done
+          // here rather than at send time because a peer needs it *before* any
+          // message exists — the bundle is the only pre-session channel, and
+          // the relay carries it as an opaque blob it never parses.
+          try {
+            await DeliveryTagRegistry.instance.ensureTag();
+          } catch (_) {}
           final bundle = await session.localBundlePayload();
           if (bundle != null) {
             await client.publishKeyPackage(
@@ -186,6 +195,14 @@ Future<bool> ensureRatchetSession(String peerUid) async {
         peerUid,
         base64Encode(bundle.identityKey.sublist(1)),
       );
+      // Note what is deliberately *not* done with `bundle.deliveryTag`: it is
+      // not remembered as a place to seal to. A bundle proves only that the peer
+      // published a tag, not that they can open anything sealed to it — sealing
+      // needs them to hold *our* identity key, and a peer who added us without
+      // us adding them holds nothing. Their client would then be unable to
+      // attribute the message and it would expire, undelivered. So sealing waits
+      // for proof, which is a tag inside a payload we decrypted
+      // (`SealedSender.rememberPeerTag`, called from the receive path).
     }
     return ok;
   } catch (e) {

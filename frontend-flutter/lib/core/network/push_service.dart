@@ -36,6 +36,13 @@ class PushService {
   static const String _keyBatteryOptimizationPrompted =
       'airchat_battery_opt_asked';
 
+  /// FCM token, kept so the connection layer can hand it to the relay together
+  /// with a delivery tag. A token is only useful *per tag* — the relay stores
+  /// `(tag, fcmToken)` and nothing else — and the code that claims tags runs on
+  /// every connect, including reconnects, so reading it from storage keeps
+  /// Firebase out of that path.
+  static const String _keyFcmToken = 'airchat_fcm_token';
+
   final FirebaseMessaging _messaging = FirebaseMessaging.instance;
   final ApiClient _apiClient;
 
@@ -62,10 +69,12 @@ class PushService {
 
     final token = await _messaging.getToken();
     if (token != null) {
+      await _rememberToken(token);
       await _apiClient.sendFcmToken(token);
     }
 
     _messaging.onTokenRefresh.listen((newToken) {
+      _rememberToken(newToken);
       _apiClient.sendFcmToken(newToken);
     });
 
@@ -75,6 +84,22 @@ class PushService {
     FirebaseMessaging.onMessage.listen((message) {
       _handleWake(message);
     });
+  }
+
+  /// Last FCM token this device saw, or null when there is none yet.
+  static Future<String?> lastKnownToken() async {
+    try {
+      final token = await _storage.read(key: _keyFcmToken);
+      return (token == null || token.isEmpty) ? null : token;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _rememberToken(String token) async {
+    try {
+      await _storage.write(key: _keyFcmToken, value: token);
+    } catch (_) {}
   }
 
   /// Helps keep pushes working on OEM devices that aggressively restrict
@@ -118,6 +143,25 @@ Future<void> _showWakeNotification(
 }) async {
   final data = message.data;
   final wakeType = data['type'] as String?;
+
+  // Sealed wake: the payload is literally empty — no sender, no group, no uid.
+  //
+  // So there is nothing to resolve a name from, and that is the point: Google
+  // learns only that this device has mail. The notification is deliberately
+  // generic rather than a rich one fetched in the background, for two reasons.
+  // The first is that it *is* the privacy claim — today's named wake puts the
+  // sender's name on a locked phone's screen, which is the leak this whole
+  // design closes. The second is that a background decrypt-and-preview is only
+  // worth building once notification content can be gated behind an app lock;
+  // until then a rich sealed notification would just move the same leak. The
+  // message itself is already stored and shown when the app opens.
+  if (wakeType == 'sealed_wake') {
+    await NotificationService.instance.showMessageNotification(
+      title: 'AirChat',
+      body: 'You have a new message',
+    );
+    return;
+  }
 
   // Group wake: resolve group + sender names locally (opaque push).
   if (wakeType == 'group_wake') {

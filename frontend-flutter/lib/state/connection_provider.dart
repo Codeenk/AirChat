@@ -8,7 +8,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/crash/crash_reporter.dart';
 import '../core/crypto/key_store.dart';
 import '../core/crypto/mls_group_service.dart';
+import '../core/crypto/delivery_tag.dart';
 import '../core/crypto/ratchet_session.dart';
+import '../core/crypto/sealed_sender.dart';
 import '../core/crypto/relay_auth.dart';
 import '../core/crypto/signing_engine.dart';
 import '../core/crypto/sodium_engine.dart';
@@ -74,9 +76,27 @@ final websocketClientProvider = Provider.family<WebSocketTunnelClient, String>((
   ref,
   uid,
 ) {
-  final client = WebSocketTunnelClient(
+  // Declared before construction so the callbacks below can refer to the
+  // client they belong to.
+  late final WebSocketTunnelClient client;
+  client = WebSocketTunnelClient(
     uid: uid,
     signChallenge: (nonce) => signRelayChallenge(uid, nonce),
+    onAuthenticated: () async {
+      // Claim our sealed-sender delivery tags on every successful connect.
+      //
+      // A tag row on the relay is what makes this device reachable at all on the
+      // sealed transport, and the claim is deliberately self-healing: it is
+      // unauthenticated (a tag confers no privilege) and re-sent on every
+      // connect, so a lost row, an expired TTL, or another device racing us for
+      // the same tag all resolve on the next connection.
+      try {
+        await SealedSender.instance.register(
+          client,
+          fcmToken: await PushService.lastKnownToken(),
+        );
+      } catch (_) {}
+    },
     onAuthFailure: () async {
       // The relay rejected our auth — almost always a missing/stale signing
       // key server-side. Re-register (upsert) so the directory holds our
@@ -160,6 +180,8 @@ class MessageRouter {
       final type = msg['type'];
       if (type == 'direct_message') {
         _handleDirectMessage(msg);
+      } else if (type == 'sealed_message') {
+        _handleSealedMessage(msg);
       } else if (type == 'group_packet') {
         _handleGroupPacket(msg);
       } else if (type == 'packet_status') {
@@ -172,6 +194,29 @@ class MessageRouter {
           messageDao.updateMessageStatus(packetId, mapped);
           bus.fire(
             RefreshEvent(type: 'status', messageId: packetId, status: mapped),
+          );
+        }
+      } else if (type == 'seal_status') {
+        // Same vocabulary as `packet_status`, plus the sealed-only failures
+        // (an expired or unregistered recipient tag) which mean "could not
+        // deliver" and must not leave the bubble spinning forever.
+        final packetId = msg['packetId'] as String?;
+        final status = msg['status'] as String?;
+        final mapped = status == null
+            ? null
+            : (mapRelayStatus(status) ?? mapSealedFailure(status));
+        if (packetId != null && mapped != null) {
+          messageDao.updateMessageStatus(packetId, mapped);
+          bus.fire(
+            RefreshEvent(type: 'status', messageId: packetId, status: mapped),
+          );
+        }
+      } else if (type == 'seal_read') {
+        final packetId = msg['packetId'] as String?;
+        if (packetId != null) {
+          messageDao.updateMessageStatus(packetId, 'read');
+          bus.fire(
+            RefreshEvent(type: 'status', messageId: packetId, status: 'read'),
           );
         }
       } else if (type == 'read_receipt') {
@@ -221,11 +266,7 @@ class MessageRouter {
 
     if (senderUid == null || packetId == null || encodedPayload == null) return;
 
-    // Replay window: drop messages older than the 24h cache TTL (+1h skew)
-    // or more than 5min in the future (clock games / replay injection).
-    final now = DateTime.now().millisecondsSinceEpoch;
-    if (timestamp < now - 25 * 60 * 60 * 1000 ||
-        timestamp > now + 5 * 60 * 1000) {
+    if (_outsideReplayWindow(timestamp)) {
       CrashReporter.recordError(
         error: 'replay/out-of-window dropped from $senderUid',
         source: 'replay-guard',
@@ -238,244 +279,396 @@ class MessageRouter {
         senderUid: senderUid,
         encodedPayload: encodedPayload,
       );
-
-      final decoded = jsonDecode(decrypted) as Map<String, dynamic>;
-      final messageType = decoded['type'] ?? 'text';
-      final text = decoded['text'] ?? '';
-      final mediaKey = decoded['mediaKey'];
-      final secretKeyHex = decoded['secretKeyHex'];
-      final nonceHex = decoded['nonceHex'];
-      final replyTo = (decoded['replyTo'] as Map<String, dynamic>?) ?? const {};
-      final groupId = decoded['groupId'] as String?;
-      final groupName = decoded['groupName'] as String?;
-
-      // Group control messages: create/update local group, no chat bubble.
-      if (messageType == 'group_invite' ||
-          messageType == 'group_add' ||
-          messageType == 'group_kick') {
-        // Verify the control signature — roster changes from anyone but a
-        // member are dropped (relay spoofing / outsider injection).
-        // Missing sig = legacy client → accept (rollout compat).
-        if (decoded['sig'] != null) {
-          final ctrlMembers =
-              (decoded['memberUids'] as List<dynamic>?)?.cast<String>() ?? [];
-          final ctrlGid = decoded['groupId'] as String? ?? '';
-          final directOk = await _verifyControlSender(
-            senderUid: senderUid,
-            type: messageType,
-            groupId: ctrlGid,
-            memberUids: ctrlMembers,
-            signature: decoded['sig'] as String?,
-          );
-          if (!directOk) {
-            CrashReporter.recordError(
-              error: 'group control sig invalid from $senderUid',
-              source: 'group-verify',
-            );
-            return;
-          }
-        }
-
-        final gid = groupId ?? decoded['groupId'] as String? ?? '';
-        final gname = groupName ?? decoded['groupName'] as String? ?? 'Group';
-        final memberUids =
-            (decoded['memberUids'] as List<dynamic>?)?.cast<String>() ?? [];
-        final receivedGroupKey = decoded['groupKey'] as String?;
-        final incomingCrypto = decoded['cryptoVersion'] as int?;
-        if (gid.isNotEmpty) {
-          if (messageType == 'group_kick' &&
-              (decoded['kickedUid'] as String? ?? '') == uid) {
-            await GroupDao().deleteGroup(gid);
-            // Drop the MLS state too: a group this device has left must not
-            // keep epoch secrets that would still open its traffic.
-            try {
-              await MlsGroupService.instance.deleteGroup(gid);
-            } catch (_) {}
-          } else {
-            final wasKick = messageType == 'group_kick';
-            // An MLS invite carries a Welcome rather than a key. Join it first
-            // so this device holds a leaf in the ratchet tree before any group
-            // traffic for it arrives — a message for an epoch we are not in
-            // cannot be opened, and there is no second chance to join later.
-            final existingGroup = await GroupDao().getGroupById(gid);
-            final mlsWelcome = decoded['mlsWelcome'] as String?;
-            var mlsJoined = existingGroup != null && existingGroup.usesMls;
-            if (!mlsJoined && mlsWelcome != null && mlsWelcome.isNotEmpty) {
-              mlsJoined = await _joinMlsGroup(gid, mlsWelcome);
-            }
-            // If we already have this group locally, preserve the existing groupKey
-            // unless the incoming payload carries a new one (key rotation).
-            final incomingVersion = decoded['keyVersion'] as int?;
-            final carriesKey =
-                receivedGroupKey != null && receivedGroupKey.isNotEmpty;
-            // Replay guard. The relay is unordered and replayable, so an old
-            // key-carrying control can arrive after a newer one. Applying it
-            // would restore a superseded group key and silently undo the
-            // rotation that revoked a removed member. A generation that is not
-            // newer than what we hold is dropped.
-            // Unversioned controls (legacy clients) are still accepted so the
-            // rollout does not break groups that predate versioning.
-            if (carriesKey &&
-                !acceptsControlVersion(
-                  localVersion: existingGroup?.keyVersion ?? 0,
-                  incomingVersion: incomingVersion,
-                )) {
-              CrashReporter.recordError(
-                error: 'stale key-carrying group control dropped for $gid',
-                source: 'group-version',
-              );
-              return;
-            }
-            final effectiveKey = receivedGroupKey ?? existingGroup?.groupKey;
-            await GroupDao().insertGroup(
-              Group(
-                id: gid,
-                name: gname,
-                memberUids: memberUids.isEmpty ? [uid, senderUid] : memberUids,
-                createdAt: timestamp,
-                groupKey: effectiveKey,
-                keyVersion: incomingVersion ?? existingGroup?.keyVersion ?? 0,
-                // Preserve this group's scheme. A control that does not name
-                // one (a legacy client) must not flip a group either way: only
-                // a Welcome moves a group onto MLS, and only the group's own
-                // creator decides that.
-                cryptoVersion: mlsJoined
-                    ? GroupCrypto.mls
-                    : (incomingCrypto ??
-                          existingGroup?.cryptoVersion ??
-                          GroupCrypto.legacySharedKey),
-              ),
-            );
-            // A kick changed the roster. The elected survivor then revokes the
-            // departed member: an MLS commit that removes them from the tree,
-            // or a shared-key rotation for a legacy group. See
-            // groupRekeyWatcherProvider.
-            if (wasKick) {
-              bus.fire(RefreshEvent(type: 'rekey', chatId: gid));
-            }
-          }
-          bus.fire(RefreshEvent(type: 'messages', chatId: gid));
-        }
-        return;
-      }
-
-      final isGroup = groupId != null && groupId.isNotEmpty;
-      if (groupId != null && groupId.isNotEmpty) {
-        final localGroup = await GroupDao().getGroupById(groupId);
-        if (localGroup != null && !localGroup.memberUids.contains(senderUid)) {
-          // Sender was removed/left — ignore their stale messages.
-          return;
-        }
-      }
-
-      final chatId = (groupId != null && groupId.isNotEmpty)
-          ? groupId
-          : _chatId(uid, senderUid);
-
-      // Sender authenticity: verify the Ed25519 signature over
-      // `packetId|text|chatId`. A hostile relay knows every recipient's public
-      // key and could otherwise synthesize a ciphertext "from" any sender.
-      // Missing sig = legacy client (accepted during rollout); invalid = drop.
-      final directSig = decoded['sig'] as String?;
-      if (directSig != null && directSig.isNotEmpty) {
-        final directOk = await _verifyDirectSender(
-          senderUid: senderUid,
-          packetId: packetId,
-          text: text,
-          chatId: chatId,
-          signature: directSig,
-        );
-        if (!directOk) {
-          CrashReporter.recordError(
-            error: 'direct sig invalid from $senderUid',
-            source: 'direct-verify',
-          );
-          return;
-        }
-      }
-
-      // Resolve contact name inline (fast, no network) — use fallback if unknown.
-      final existing = await contactDao.getContactByUid(senderUid);
-      String contactName;
-      if (existing != null && !_isFallbackName(existing.username)) {
-        contactName = existing.username;
-      } else {
-        contactName = _fallbackName(senderUid);
-      }
-
-      // Store message IMMEDIATELY — never block on network lookups.
-      final message = ChatMessage(
-        id: packetId,
-        chatId: chatId,
+      await _processDirectPlaintext(
         senderUid: senderUid,
-        recipientUid: uid,
-        text: text,
-        mediaKey: mediaKey,
-        secretKeyHex: secretKeyHex,
-        nonceHex: nonceHex,
-        type: isGroup ? 'text' : messageType,
+        packetId: packetId,
         timestamp: timestamp,
-        isMe: false,
-        status: 'delivered',
-        replyToId: replyTo['id'] as String?,
-        replyText: (replyTo['text'] as String?) ?? '',
-        replyType: (replyTo['type'] as String?) ?? 'text',
-        replyIsMe: replyTo['isMe'] as bool?,
-        groupId: isGroup ? groupId : null,
-        groupSenderName: isGroup ? contactName : null,
+        decrypted: decrypted,
       );
-
-      await messageDao.insertMessage(message);
-
-      if (isGroup) {
-        if (MessageRouter.openChatId != chatId) {
-          await GroupDao().incrementUnread(chatId);
-        }
-        bus.fire(RefreshEvent(type: 'messages', chatId: chatId));
-        if (!_isOpenChatVisible(chatId)) {
-          final gname = groupName ?? 'Group';
-          await NotificationService.instance.showMessageNotification(
-            title: '$gname • $contactName',
-            body: text.isEmpty ? '📎 $messageType' : text,
-            senderUid: chatId,
-          );
-        }
-      } else {
-        final chatOpen = MessageRouter.openChatId == chatId;
-        await chatDao.updatePreviewPreservingUnread(
-          ChatThread(
-            id: chatId,
-            contactUid: senderUid,
-            lastMessage: text.isEmpty ? '📎 $messageType' : text,
-            lastMessageTime: timestamp,
-          ),
-        );
-
-        if (!chatOpen) {
-          await chatDao.incrementUnread(chatId);
-        }
-
-        bus.fire(RefreshEvent(type: 'messages', chatId: chatId));
-
-        if (NotificationService.isAppForeground &&
-            MessageRouter.openChatId == chatId) {
-          client.sendReadReceipt(packetId: packetId, senderUid: senderUid);
-        }
-
-        if (!_isOpenChatVisible(chatId)) {
-          await NotificationService.instance.showMessageNotification(
-            title: contactName,
-            body: text.isEmpty ? '📎 $messageType' : text,
-            senderUid: senderUid,
-          );
-        }
-      }
-
-      // Background directory resolution — never blocks message delivery.
-      _resolveContactInBackground(senderUid);
     } catch (e) {
       // Decryption failed or message already stored
     }
+  }
+
+  /// Handles a **sealed** packet: the relay delivered it without ever knowing
+  /// who sent it, so no uid arrives with it in either direction.
+  ///
+  /// The sender is recovered by decryption, not by asking the relay:
+  /// [SealedSender.open] tries the packet against our own sessions, and the
+  /// peer whose session opens it *is* the sender, cryptographically. A packet
+  /// that opens against nobody is not acked — it stays on the relay until its
+  /// TTL rather than being destroyed — because the one thing we know for certain
+  /// is that we could not read it yet.
+  Future<void> _handleSealedMessage(Map<String, dynamic> msg) async {
+    // The tag the relay addressed it to. It is our own tag, not an identity,
+    // and it is what the ack has to quote.
+    final tag = msg['to'] as String?;
+    final packetId = msg['packetId'] as String?;
+    final body = msg['body'] as String?;
+    final timestamp =
+        msg['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch;
+
+    if (tag == null || packetId == null || body == null) return;
+
+    if (_outsideReplayWindow(timestamp)) {
+      CrashReporter.recordError(
+        error: 'sealed replay/out-of-window dropped for $packetId',
+        source: 'replay-guard',
+      );
+      return;
+    }
+
+    SealedInbound? opened;
+    try {
+      opened = await SealedSender.instance.open(body: body, packetId: packetId);
+    } catch (e) {
+      CrashReporter.recordError(
+        error: 'sealed open failed for $packetId: $e',
+        source: 'sealed-receive',
+      );
+    }
+    if (opened == null) return;
+
+    // Where a reply, and every later status, must go. This comes from the
+    // peer's *own* authenticated payload — never from the wire. The relay
+    // supplies a `reply` field on a legacy-shaped delivery, but it is
+    // relay-authored: trusting it would let a hostile relay point our sends at
+    // a tag it controls, and it is absent from `sealed_message` anyway, because
+    // a client that can open the message already knows the return path.
+    final replyTag = _sealedPayloadTag(opened.plaintext);
+
+    try {
+      await _processDirectPlaintext(
+        senderUid: opened.senderUid,
+        packetId: packetId,
+        timestamp: timestamp,
+        decrypted: opened.plaintext,
+        replyTag: replyTag,
+      );
+    } catch (e) {
+      CrashReporter.recordError(
+        error: 'sealed payload rejected for $packetId: $e',
+        source: 'sealed-receive',
+      );
+    }
+
+    await SealedSender.instance.rememberPeerTag(opened.senderUid, replyTag);
+
+    // Acknowledged *after* the payload was processed, so a message we could not
+    // read is left on the relay rather than destroyed. `tag` is our own address
+    // and scopes the delete; [replyTag] only routes the delivery status back to
+    // its author, and an offline author simply gets no status — which their
+    // client already treats as "still queued".
+    SealedSender.instance.ack(
+      client: client,
+      tag: tag,
+      packetId: packetId,
+      replyTag: replyTag,
+    );
+  }
+
+  /// The sender's delivery tag as advertised inside their own encrypted
+  /// payload, or null when they use a build that does not send one.
+  static String? _sealedPayloadTag(String plaintext) {
+    try {
+      final decoded = jsonDecode(plaintext);
+      if (decoded is! Map) return null;
+      return decoded['dt'] as String?;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Whether a relay timestamp is outside the accepted window: older than the
+  /// 24h cache TTL (+1h skew) or more than 5min in the future (clock games /
+  /// replay injection). Shared by both transports — a sealed packet is no more
+  /// trustworthy than a named one.
+  static bool _outsideReplayWindow(int timestamp) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    return timestamp < now - 25 * 60 * 60 * 1000 ||
+        timestamp > now + 5 * 60 * 1000;
+  }
+
+  /// Everything that happens *after* a 1:1 payload has been decrypted — group
+  /// controls, sender-signature verification, storage, notifications.
+  ///
+  /// Shared by the named and sealed transports on purpose: this is where
+  /// authenticity is actually decided (the Ed25519 signature over
+  /// `packetId|text|chatId`), and a second copy of it would be a second place
+  /// for that to silently weaken.
+  Future<void> _processDirectPlaintext({
+    required String senderUid,
+    required String packetId,
+    required int timestamp,
+    required String decrypted,
+    String? replyTag,
+  }) async {
+    final decoded = jsonDecode(decrypted) as Map<String, dynamic>;
+    final messageType = decoded['type'] ?? 'text';
+    final text = decoded['text'] ?? '';
+    final mediaKey = decoded['mediaKey'];
+    final secretKeyHex = decoded['secretKeyHex'];
+    final nonceHex = decoded['nonceHex'];
+    final replyTo = (decoded['replyTo'] as Map<String, dynamic>?) ?? const {};
+    final groupId = decoded['groupId'] as String?;
+    final groupName = decoded['groupName'] as String?;
+
+    // Group control messages: create/update local group, no chat bubble.
+    if (messageType == 'group_invite' ||
+        messageType == 'group_add' ||
+        messageType == 'group_kick') {
+      // Verify the control signature — roster changes from anyone but a
+      // member are dropped (relay spoofing / outsider injection).
+      // Missing sig = legacy client → accept (rollout compat).
+      if (decoded['sig'] != null) {
+        final ctrlMembers =
+            (decoded['memberUids'] as List<dynamic>?)?.cast<String>() ?? [];
+        final ctrlGid = decoded['groupId'] as String? ?? '';
+        final directOk = await _verifyControlSender(
+          senderUid: senderUid,
+          type: messageType,
+          groupId: ctrlGid,
+          memberUids: ctrlMembers,
+          signature: decoded['sig'] as String?,
+        );
+        if (!directOk) {
+          CrashReporter.recordError(
+            error: 'group control sig invalid from $senderUid',
+            source: 'group-verify',
+          );
+          return;
+        }
+      }
+
+      final gid = groupId ?? decoded['groupId'] as String? ?? '';
+      final gname = groupName ?? decoded['groupName'] as String? ?? 'Group';
+      final memberUids =
+          (decoded['memberUids'] as List<dynamic>?)?.cast<String>() ?? [];
+      final receivedGroupKey = decoded['groupKey'] as String?;
+      final incomingCrypto = decoded['cryptoVersion'] as int?;
+      if (gid.isNotEmpty) {
+        if (messageType == 'group_kick' &&
+            (decoded['kickedUid'] as String? ?? '') == uid) {
+          await GroupDao().deleteGroup(gid);
+          // Drop the MLS state too: a group this device has left must not
+          // keep epoch secrets that would still open its traffic.
+          try {
+            await MlsGroupService.instance.deleteGroup(gid);
+          } catch (_) {}
+        } else {
+          final wasKick = messageType == 'group_kick';
+          // An MLS invite carries a Welcome rather than a key. Join it first
+          // so this device holds a leaf in the ratchet tree before any group
+          // traffic for it arrives — a message for an epoch we are not in
+          // cannot be opened, and there is no second chance to join later.
+          final existingGroup = await GroupDao().getGroupById(gid);
+          final mlsWelcome = decoded['mlsWelcome'] as String?;
+          var mlsJoined = existingGroup != null && existingGroup.usesMls;
+          if (!mlsJoined && mlsWelcome != null && mlsWelcome.isNotEmpty) {
+            mlsJoined = await _joinMlsGroup(gid, mlsWelcome);
+          }
+          // If we already have this group locally, preserve the existing groupKey
+          // unless the incoming payload carries a new one (key rotation).
+          final incomingVersion = decoded['keyVersion'] as int?;
+          final carriesKey =
+              receivedGroupKey != null && receivedGroupKey.isNotEmpty;
+          // Replay guard. The relay is unordered and replayable, so an old
+          // key-carrying control can arrive after a newer one. Applying it
+          // would restore a superseded group key and silently undo the
+          // rotation that revoked a removed member. A generation that is not
+          // newer than what we hold is dropped.
+          // Unversioned controls (legacy clients) are still accepted so the
+          // rollout does not break groups that predate versioning.
+          if (carriesKey &&
+              !acceptsControlVersion(
+                localVersion: existingGroup?.keyVersion ?? 0,
+                incomingVersion: incomingVersion,
+              )) {
+            CrashReporter.recordError(
+              error: 'stale key-carrying group control dropped for $gid',
+              source: 'group-version',
+            );
+            return;
+          }
+          final effectiveKey = receivedGroupKey ?? existingGroup?.groupKey;
+          await GroupDao().insertGroup(
+            Group(
+              id: gid,
+              name: gname,
+              memberUids: memberUids.isEmpty ? [uid, senderUid] : memberUids,
+              createdAt: timestamp,
+              groupKey: effectiveKey,
+              keyVersion: incomingVersion ?? existingGroup?.keyVersion ?? 0,
+              // Preserve this group's scheme. A control that does not name
+              // one (a legacy client) must not flip a group either way: only
+              // a Welcome moves a group onto MLS, and only the group's own
+              // creator decides that.
+              cryptoVersion: mlsJoined
+                  ? GroupCrypto.mls
+                  : (incomingCrypto ??
+                        existingGroup?.cryptoVersion ??
+                        GroupCrypto.legacySharedKey),
+            ),
+          );
+          // A kick changed the roster. The elected survivor then revokes the
+          // departed member: an MLS commit that removes them from the tree,
+          // or a shared-key rotation for a legacy group. See
+          // groupRekeyWatcherProvider.
+          if (wasKick) {
+            bus.fire(RefreshEvent(type: 'rekey', chatId: gid));
+          }
+        }
+        bus.fire(RefreshEvent(type: 'messages', chatId: gid));
+      }
+      return;
+    }
+
+    final isGroup = groupId != null && groupId.isNotEmpty;
+    if (groupId != null && groupId.isNotEmpty) {
+      final localGroup = await GroupDao().getGroupById(groupId);
+      if (localGroup != null && !localGroup.memberUids.contains(senderUid)) {
+        // Sender was removed/left — ignore their stale messages.
+        return;
+      }
+    }
+
+    final chatId = (groupId != null && groupId.isNotEmpty)
+        ? groupId
+        : _chatId(uid, senderUid);
+
+    // Sender authenticity: verify the Ed25519 signature over
+    // `packetId|text|chatId`. A hostile relay knows every recipient's public
+    // key and could otherwise synthesize a ciphertext "from" any sender.
+    // Missing sig = legacy client (accepted during rollout); invalid = drop.
+    final directSig = decoded['sig'] as String?;
+    if (directSig != null && directSig.isNotEmpty) {
+      final directOk = await _verifyDirectSender(
+        senderUid: senderUid,
+        packetId: packetId,
+        text: text,
+        chatId: chatId,
+        signature: directSig,
+      );
+      if (!directOk) {
+        CrashReporter.recordError(
+          error: 'direct sig invalid from $senderUid',
+          source: 'direct-verify',
+        );
+        return;
+      }
+    }
+
+    // Resolve contact name inline (fast, no network) — use fallback if unknown.
+    final existing = await contactDao.getContactByUid(senderUid);
+    String contactName;
+    if (existing != null && !_isFallbackName(existing.username)) {
+      contactName = existing.username;
+    } else {
+      contactName = _fallbackName(senderUid);
+    }
+
+    // Store message IMMEDIATELY — never block on network lookups.
+    final message = ChatMessage(
+      id: packetId,
+      chatId: chatId,
+      senderUid: senderUid,
+      recipientUid: uid,
+      text: text,
+      mediaKey: mediaKey,
+      secretKeyHex: secretKeyHex,
+      nonceHex: nonceHex,
+      type: isGroup ? 'text' : messageType,
+      timestamp: timestamp,
+      isMe: false,
+      status: 'delivered',
+      replyToId: replyTo['id'] as String?,
+      replyText: (replyTo['text'] as String?) ?? '',
+      replyType: (replyTo['type'] as String?) ?? 'text',
+      replyIsMe: replyTo['isMe'] as bool?,
+      groupId: isGroup ? groupId : null,
+      groupSenderName: isGroup ? contactName : null,
+      replyTag: replyTag,
+    );
+
+    await messageDao.insertMessage(message);
+
+    if (isGroup) {
+      if (MessageRouter.openChatId != chatId) {
+        await GroupDao().incrementUnread(chatId);
+      }
+      bus.fire(RefreshEvent(type: 'messages', chatId: chatId));
+      if (!_isOpenChatVisible(chatId)) {
+        final gname = groupName ?? 'Group';
+        await NotificationService.instance.showMessageNotification(
+          title: '$gname • $contactName',
+          body: text.isEmpty ? '📎 $messageType' : text,
+          senderUid: chatId,
+        );
+      }
+    } else {
+      final chatOpen = MessageRouter.openChatId == chatId;
+      await chatDao.updatePreviewPreservingUnread(
+        ChatThread(
+          id: chatId,
+          contactUid: senderUid,
+          lastMessage: text.isEmpty ? '📎 $messageType' : text,
+          lastMessageTime: timestamp,
+        ),
+      );
+
+      if (!chatOpen) {
+        await chatDao.incrementUnread(chatId);
+      }
+
+      bus.fire(RefreshEvent(type: 'messages', chatId: chatId));
+
+      if (NotificationService.isAppForeground &&
+          MessageRouter.openChatId == chatId) {
+        await _sendReadReceipt(
+          packetId: packetId,
+          senderUid: senderUid,
+          replyTag: replyTag,
+        );
+      }
+
+      if (!_isOpenChatVisible(chatId)) {
+        await NotificationService.instance.showMessageNotification(
+          title: contactName,
+          body: text.isEmpty ? '📎 $messageType' : text,
+          senderUid: senderUid,
+        );
+      }
+    }
+
+    // Background directory resolution — never blocks message delivery.
+    _resolveContactInBackground(senderUid);
+  }
+
+  /// Tells the author we read their message, on whichever transport their
+  /// message arrived by.
+  ///
+  /// A message that arrived sealed has no sender uid to name, so its receipt
+  /// travels back along the tag its author quoted. The tag *we* quote is simply
+  /// one we currently own: the relay only forwards to the socket that registered
+  /// it, and by now the packet has been acked, so there is nothing left to
+  /// delete — the receipt is purely a notification.
+  Future<void> _sendReadReceipt({
+    required String packetId,
+    required String senderUid,
+    String? replyTag,
+  }) async {
+    if (replyTag == null || replyTag.isEmpty) {
+      client.sendReadReceipt(packetId: packetId, senderUid: senderUid);
+      return;
+    }
+    final ourTag = await DeliveryTagRegistry.instance.currentTag();
+    if (ourTag == null) return;
+    SealedSender.instance.receipt(
+      client: client,
+      tag: ourTag,
+      packetId: packetId,
+      replyTag: replyTag,
+    );
   }
 
   /// Decrypts a 1:1 payload, on the ratchet when the envelope says so.

@@ -110,6 +110,22 @@ Some metadata and behavioral patterns may still exist:
 AirChat reduces some of these by design, but it does not claim total metadata
 invisibility.
 
+What is reduced, concretely, for **new 1:1 conversations between devices on a
+current build**: the relay routes them between opaque *delivery tags* rather
+than uids, its stored packets hold no sender, its acks name only a packet, its
+wake payloads are empty, and it holds no table joining a tag to a person. See
+`SECURITY_SEALED_SENDER.md`.
+
+What is **not** reduced, and must not be claimed away:
+- a live relay (or network observer) can still correlate two connections by IP
+  address and timing; sealing removes the stored, logged, and third-party-visible
+  graph, not the ability to infer a live one
+- message *timing* and *size* remain observable at submission
+- groups and 1:1 conversations with an older build still run the named
+  transport, and a group roster is still visible to the relay
+- a sealed first message from someone not already in our contacts cannot be
+  attributed (`SECURITY_SEALED_SENDER.md` §7.6)
+
 ## 4. Trust boundaries
 
 ### 4.1 Device
@@ -129,6 +145,12 @@ encryption key material, and the app's handling of that key material.
 The relay is treated as potentially curious and potentially compromised. It
 should only ever see opaque ciphertext/metadata needed for delivery, and only
 retain it transiently.
+
+The sealed-sender design is what makes "opaque" concrete rather than aspirational
+for 1:1 traffic: the relay is assumed to be *reading its own database and logs*,
+so the sender's identity is never written to either. It is still trusted for
+availability — it can drop, delay, or reorder sealed traffic, and no design
+without an anonymity layer can stop that.
 
 ### 4.5 Push / notification path
 Push delivery is treated as an untrusted transport for content. Notifications

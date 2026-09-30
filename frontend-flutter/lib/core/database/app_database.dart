@@ -27,7 +27,7 @@ class AppDatabase {
       return await databaseFactoryFfiWeb.openDatabase(
         '/airchat/airchat_web.db',
         options: OpenDatabaseOptions(
-          version: 12,
+          version: 13,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         ),
@@ -41,7 +41,7 @@ class AppDatabase {
       return await openDatabase(
         path,
         password: masterKey,
-        version: 12,
+        version: 13,
         onCreate: _onCreate,
         onUpgrade: _onUpgrade,
       );
@@ -55,7 +55,7 @@ class AppDatabase {
         return await openDatabase(
           path,
           password: masterKey,
-          version: 12,
+          version: 13,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         );
@@ -135,7 +135,8 @@ class AppDatabase {
         reply_type TEXT,
         reply_is_me INTEGER,
         group_id TEXT,
-        group_sender_name TEXT
+        group_sender_name TEXT,
+        reply_tag TEXT
       )
     ''');
     await db.execute(
@@ -308,6 +309,21 @@ class AppDatabase {
         await db.execute(
           'ALTER TABLE chat_threads ADD COLUMN crypto_version INTEGER DEFAULT 1',
         );
+      } catch (e) {
+        if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;
+      }
+    }
+    if (oldVersion < 13) {
+      // v13: the sealed-sender return tag for an inbound message.
+      //
+      // A sealed message arrives with no sender uid — the relay does not know
+      // who sent it, which is the point — so the only path back to its author is
+      // the delivery tag they quoted. It is needed later, when the reader opens
+      // the chat rather than when the message lands, so it has to be stored with
+      // the message. NULL means the message came over the named transport, where
+      // the sender uid in the row is all the routing that is needed.
+      try {
+        await db.execute('ALTER TABLE messages ADD COLUMN reply_tag TEXT');
       } catch (e) {
         if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;
       }

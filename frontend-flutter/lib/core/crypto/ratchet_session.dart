@@ -12,6 +12,7 @@ import 'package:synchronized/synchronized.dart';
 
 import '../crash/crash_reporter.dart';
 import '../database/app_database.dart';
+import 'delivery_tag.dart';
 import 'key_store.dart';
 import 'wire_envelope.dart';
 
@@ -163,9 +164,12 @@ class RatchetSession {
     Future<Database> Function()? database,
     Future<SimpleKeyPair?> Function()? identityKeyPair,
     Future<String?> Function()? uid,
+    Future<String?> Function()? deliveryTag,
   }) : _database = database ?? (() => AppDatabase.instance),
        _identityKeyPairReader = identityKeyPair ?? KeyStore.getKeyPair,
-       _uidReader = uid ?? KeyStore.getUid;
+       _uidReader = uid ?? KeyStore.getUid,
+       _deliveryTagReader =
+           deliveryTag ?? DeliveryTagRegistry.instance.currentTag;
 
   /// The app-wide instance. Tests construct their own with an in-memory
   /// database and an ephemeral identity.
@@ -174,6 +178,12 @@ class RatchetSession {
   final Future<Database> Function() _database;
   final Future<SimpleKeyPair?> Function() _identityKeyPairReader;
   final Future<String?> Function() _uidReader;
+
+  /// This device's current sealed-sender delivery tag, read when a bundle is
+  /// built. Defaults to the real registry; returns null in a test (or when the
+  /// platform keystore is unavailable) and the bundle is published without a
+  /// tag, which is exactly the "this device cannot be sealed to" case.
+  final Future<String?> Function() _deliveryTagReader;
 
   /// Signal uses one device per uid in this app, so every address is device 1.
   static const int deviceId = 1;
@@ -191,6 +201,7 @@ class RatchetSession {
   static const String _kindKyberPreKey = 'kyber';
   static const String _kindKyberUsed = 'kyber_used';
   static const String _kindPeer = 'peer';
+  static const String _kindPeerTag = 'peer_tag';
 
   static const String _metaRegistrationId = 'registration_id';
   static const String _metaSignedPreKeyId = 'signed_prekey_id';
@@ -403,6 +414,10 @@ class RatchetSession {
         kyberPreKeyId: kyber.id(),
         kyberPreKey: kyber.getPublicKey().serialize(),
         kyberPreKeySignature: Uint8List.fromList(kyber.signature()),
+        // The tag rides *inside* the bundle, which the relay stores as an opaque
+        // blob it never parses — so a public directory field would hand the
+        // relay the `uid <-> tag` join we removed, and this does not.
+        deliveryTag: await _readDeliveryTag(),
       ).encode();
     } catch (e) {
       CrashReporter.recordError(
@@ -446,7 +461,84 @@ class RatchetSession {
     return utf8.decode(blob.sublist(1));
   }
 
-  // ─── sessions ───
+  // ─── peer delivery tags ───
+
+  /// Remembers the sealed-sender tag [peerUid] is reachable on, or forgets it
+  /// when [tag] is null.
+  ///
+  /// Kept beside the peer capability cache because it answers the same kind of
+  /// question — "what can this peer do?" — and both are per-peer facts written
+  /// at the moment we learn them. Only the shape of the tag is validated
+  /// ([DeliveryTag.isValid]); the source is the caller's responsibility, and it
+  /// matters: only tags out of a *decrypted payload* may be stored here, because
+  /// the send path treats holding one as proof the peer can be sealed to.
+  Future<void> rememberPeerTag(String peerUid, String? tag) async {
+    if (tag == null || tag.isEmpty) {
+      await _deleteBlob(_kindPeerTag, peerUid);
+      return;
+    }
+    if (!DeliveryTag.isValid(tag)) return;
+    await _storeBlob(
+      _kindPeerTag,
+      peerUid,
+      Uint8List.fromList(utf8.encode(tag)),
+    );
+  }
+
+  /// The tag we last learned for [peerUid], or null when we have never learned
+  /// one — in which case they cannot be sealed to and the caller uses the named
+  /// transport (`SECURITY_SEALED_SENDER.md` §6).
+  Future<String?> peerTag(String peerUid) async {
+    final blob = await _loadBlob(_kindPeerTag, peerUid);
+    if (blob == null || blob.isEmpty) return null;
+    try {
+      final tag = utf8.decode(blob);
+      return DeliveryTag.isValid(tag) ? tag : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Every peer this device holds a ratchet session with.
+  ///
+  /// This is the trial-decryption candidate set for an inbound sealed packet: a
+  /// `SignalMessage` can only be opened by the session that produced it, so the
+  /// peers listed here are the only ones worth trying. Refs are stored as
+  /// `<uid>|<deviceId>`; the uid is the part before the separator.
+  Future<List<String>> sessionPeers() async {
+    await ensureReady();
+    if (!_ready) return const [];
+    try {
+      final db = await _database();
+      final rows = await db.query(
+        'ratchet_store',
+        columns: ['ref'],
+        where: 'kind = ?',
+        whereArgs: [_kindSession],
+      );
+      final peers = <String>[];
+      for (final row in rows) {
+        final ref = row['ref'] as String?;
+        if (ref == null || ref.isEmpty) continue;
+        final uid = ref.split('|').first;
+        if (uid.isNotEmpty) peers.add(uid);
+      }
+      return peers;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// The tag to advertise in this device's published bundle. A registry
+  /// failure must not cost us the bundle: an untagged bundle still opens a
+  /// ratchet, it only means the peer keeps using the named transport.
+  Future<String?> _readDeliveryTag() async {
+    try {
+      return await _deliveryTagReader();
+    } catch (_) {
+      return null;
+    }
+  } // ─── sessions ───
 
   /// Whether a session with [peerUid] already exists locally.
   Future<bool> hasSession(String peerUid) async {
