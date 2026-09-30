@@ -61,3 +61,29 @@ CREATE TABLE IF NOT EXISTS key_packages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_key_packages_expiry ON key_packages(expires_at);
+
+-- Sealed sender: opaque device addressing. Neither table has a uid column, so
+-- the relay's persisted state contains no tag<->person join and therefore no
+-- social graph. See SECURITY_SEALED_SENDER.md.
+CREATE TABLE IF NOT EXISTS device_tags (
+    tag        TEXT PRIMARY KEY,
+    fcm_token  TEXT,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_tags_expiry ON device_tags(expires_at);
+
+-- Group membership, self-subscribed: a member registers only its own
+-- (group_tag, member_tag) pair, so no client ever hands the relay a roster.
+CREATE TABLE IF NOT EXISTS group_subscriptions (
+    group_tag  TEXT NOT NULL,
+    member_tag TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (group_tag, member_tag)
+);
+
+CREATE INDEX IF NOT EXISTS idx_group_subscriptions_group ON group_subscriptions(group_tag);
+CREATE INDEX IF NOT EXISTS idx_group_subscriptions_member ON group_subscriptions(member_tag);
+CREATE INDEX IF NOT EXISTS idx_group_subscriptions_expiry ON group_subscriptions(expires_at);

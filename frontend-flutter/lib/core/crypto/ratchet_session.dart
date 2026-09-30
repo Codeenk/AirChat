@@ -35,6 +35,19 @@ class RatchetBundle {
   final Uint8List kyberPreKey;
   final Uint8List kyberPreKeySignature;
 
+  /// This peer's sealed-sender delivery tag, or null when they are on a build
+  /// that predates sealed delivery.
+  ///
+  /// It rides *inside* this bundle rather than being published in the identity
+  /// directory on purpose. The relay stores bundles as opaque blobs it never
+  /// parses, so the relay cannot read the tag and therefore cannot build the
+  /// `uid <-> tag` join that would put the social graph back together. A public
+  /// directory field would have handed it over directly.
+  ///
+  /// Null is not an error: it means "this peer cannot be sealed to yet", and
+  /// the caller falls back to the legacy named transport.
+  final String? deliveryTag;
+
   const RatchetBundle({
     required this.registrationId,
     required this.deviceId,
@@ -45,6 +58,7 @@ class RatchetBundle {
     required this.kyberPreKeyId,
     required this.kyberPreKey,
     required this.kyberPreKeySignature,
+    this.deliveryTag,
   });
 
   String encode() => jsonEncode({
@@ -58,6 +72,7 @@ class RatchetBundle {
     'kybId': kyberPreKeyId,
     'kyb': base64Encode(kyberPreKey),
     'kybSig': base64Encode(kyberPreKeySignature),
+    if (deliveryTag != null) 'dt': deliveryTag,
   });
 
   /// Parses a published bundle, or returns null when it is not one we can use.
@@ -79,6 +94,7 @@ class RatchetBundle {
         kyberPreKeyId: decoded['kybId'] as int,
         kyberPreKey: base64Decode(decoded['kyb'] as String),
         kyberPreKeySignature: base64Decode(decoded['kybSig'] as String),
+        deliveryTag: decoded['dt'] as String?,
       );
     } catch (_) {
       return null;

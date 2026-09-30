@@ -151,6 +151,58 @@ export async function sendSilentWake(
   }
 }
 
+// Data-only push for a *sealed* message. Deliberately carries NO fields: no
+// sender, no recipient, no group, no packet id. A wake only has to say "you
+// have mail" — the device reconnects, flushes its own queue and attributes the
+// sender by decrypting. That is why this payload is empty: everything the
+// notification layer needs (who it is from, what it says) is derived on-device,
+// so Google never learns a single edge of the social graph.
+//
+// Contrast with sendSilentWake below, which still names `senderUid` for legacy
+// clients that cannot attribute a message any other way. That field is the leak
+// SECURITY_SEALED_SENDER.md exists to remove, and it disappears as clients move
+// onto sealed delivery.
+export async function sendSealedWake(
+  env: { FCM_SERVICE_ACCOUNT_JSON?: string; FCM_PROJECT_ID?: string },
+  fcmToken: string,
+): Promise<boolean> {
+  if (!env.FCM_SERVICE_ACCOUNT_JSON || !env.FCM_PROJECT_ID) {
+    return false; // Push not configured; queued mail still delivers on next open
+  }
+
+  try {
+    const accessToken = await getFcmAccessToken(env.FCM_SERVICE_ACCOUNT_JSON);
+
+    const res = await fetch(
+      `https://fcm.googleapis.com/v1/projects/${env.FCM_PROJECT_ID}/messages:send`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: {
+            token: fcmToken,
+            // Data-only (no `notification` block) so the background isolate is
+            // woken and can decrypt + render a real preview locally.
+            data: { type: "sealed_wake" },
+            android: { priority: "HIGH" },
+            apns: {
+              payload: { aps: { contentAvailable: true } },
+              headers: { "apns-push-type": "background", "apns-priority": "5" },
+            },
+          },
+        }),
+      },
+    );
+
+    return res.ok;
+  } catch {
+    return false; // Never fail message queuing because of push errors
+  }
+}
+
 // Data-only push for group messages — wakes the background isolate with
 // the opaque groupId (random grp_*, needed to fetch the right group inbox).
 // Names are resolved locally on-device; Google sees no social graph.
