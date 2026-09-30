@@ -27,7 +27,7 @@ class AppDatabase {
       return await databaseFactoryFfiWeb.openDatabase(
         '/airchat/airchat_web.db',
         options: OpenDatabaseOptions(
-          version: 11,
+          version: 12,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         ),
@@ -41,7 +41,7 @@ class AppDatabase {
       return await openDatabase(
         path,
         password: masterKey,
-        version: 11,
+        version: 12,
         onCreate: _onCreate,
         onUpgrade: _onUpgrade,
       );
@@ -55,7 +55,7 @@ class AppDatabase {
         return await openDatabase(
           path,
           password: masterKey,
-          version: 11,
+          version: 12,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         );
@@ -95,7 +95,8 @@ class AppDatabase {
         contact_uid TEXT NOT NULL,
         last_message TEXT,
         last_message_time INTEGER,
-        unread_count INTEGER DEFAULT 0
+        unread_count INTEGER DEFAULT 0,
+        crypto_version INTEGER DEFAULT 1
       )
     ''');
     await db.execute(
@@ -143,6 +144,36 @@ class AppDatabase {
     await db.execute(
       'CREATE INDEX IF NOT EXISTS idx_messages_group ON messages(group_id, timestamp ASC)',
     );
+
+    await _createRatchetTables(db);
+  }
+
+  /// Tables backing the libsignal session stores (see
+  /// `lib/core/crypto/ratchet_session.dart`).
+  ///
+  /// They live in the SQLCipher-encrypted database rather than secure storage
+  /// because a session record is rewritten on every message and secure storage
+  /// is not built for that write rate. Encryption at rest is the same either
+  /// way: the file is keyed from a secret held in the platform keystore.
+  ///
+  /// One physical table serves every store, keyed by `(kind, ref)`, so there is
+  /// a single place where durability is established and one migration to
+  /// reason about as the protocol adds store kinds.
+  static Future<void> _createRatchetTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS ratchet_store (
+        kind TEXT NOT NULL,
+        ref TEXT NOT NULL,
+        blob BLOB,
+        PRIMARY KEY (kind, ref)
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS ratchet_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    ''');
   }
 
   static Future<void> _onUpgrade(
@@ -257,6 +288,25 @@ class AppDatabase {
       try {
         await db.execute(
           'ALTER TABLE groups ADD COLUMN crypto_version INTEGER DEFAULT 1',
+        );
+      } catch (e) {
+        if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;
+      }
+    }
+    if (oldVersion < 12) {
+      // v12: 1:1 Double Ratchet state and per-chat scheme selection.
+      //
+      // `ratchet_store` backs the libsignal session/identity/prekey stores; a
+      // session record is the ratchet itself, so its writes must be durable
+      // (see the store implementations). `chat_threads.crypto_version` records
+      // which scheme a *chat* uses and defaults to 1 (legacy X25519), which is
+      // the truth for every chat that already exists — a chat is only ever
+      // moved to 2 (Double Ratchet) at the moment it is first created against a
+      // peer that publishes a bundle, never rewritten mid-conversation.
+      await _createRatchetTables(db);
+      try {
+        await db.execute(
+          'ALTER TABLE chat_threads ADD COLUMN crypto_version INTEGER DEFAULT 1',
         );
       } catch (e) {
         if (!e.toString().toLowerCase().contains('duplicate column')) rethrow;

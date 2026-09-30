@@ -7,9 +7,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/crash/crash_reporter.dart';
 import '../core/crypto/key_store.dart';
+import '../core/crypto/mls_group_service.dart';
+import '../core/crypto/ratchet_session.dart';
 import '../core/crypto/relay_auth.dart';
 import '../core/crypto/signing_engine.dart';
 import '../core/crypto/sodium_engine.dart';
+import '../core/crypto/wire_envelope.dart';
 import '../core/database/daos/chat_dao.dart';
 import '../core/database/daos/contact_dao.dart';
 import '../core/database/daos/message_dao.dart';
@@ -23,6 +26,7 @@ import '../models/contact.dart';
 import '../models/group.dart';
 import '../models/message_payload.dart';
 import '../core/database/daos/group_dao.dart';
+import 'crypto_provider.dart';
 import 'refresh_bus.dart';
 
 final currentUidProvider = StateProvider<String>((ref) => '');
@@ -229,14 +233,10 @@ class MessageRouter {
       return;
     }
 
-    final keyPair = await KeyStore.getKeyPair();
-    if (keyPair == null) return;
-
     try {
-      final cryptoPayload = CryptoPayload.decode(encodedPayload);
-      final decrypted = await engine.decryptMessage(
-        payload: cryptoPayload,
-        recipientKeyPair: keyPair,
+      final decrypted = await _decryptDirect(
+        senderUid: senderUid,
+        encodedPayload: encodedPayload,
       );
 
       final decoded = jsonDecode(decrypted) as Map<String, dynamic>;
@@ -281,15 +281,30 @@ class MessageRouter {
         final memberUids =
             (decoded['memberUids'] as List<dynamic>?)?.cast<String>() ?? [];
         final receivedGroupKey = decoded['groupKey'] as String?;
+        final incomingCrypto = decoded['cryptoVersion'] as int?;
         if (gid.isNotEmpty) {
           if (messageType == 'group_kick' &&
               (decoded['kickedUid'] as String? ?? '') == uid) {
             await GroupDao().deleteGroup(gid);
+            // Drop the MLS state too: a group this device has left must not
+            // keep epoch secrets that would still open its traffic.
+            try {
+              await MlsGroupService.instance.deleteGroup(gid);
+            } catch (_) {}
           } else {
             final wasKick = messageType == 'group_kick';
+            // An MLS invite carries a Welcome rather than a key. Join it first
+            // so this device holds a leaf in the ratchet tree before any group
+            // traffic for it arrives — a message for an epoch we are not in
+            // cannot be opened, and there is no second chance to join later.
+            final existingGroup = await GroupDao().getGroupById(gid);
+            final mlsWelcome = decoded['mlsWelcome'] as String?;
+            var mlsJoined = existingGroup != null && existingGroup.usesMls;
+            if (!mlsJoined && mlsWelcome != null && mlsWelcome.isNotEmpty) {
+              mlsJoined = await _joinMlsGroup(gid, mlsWelcome);
+            }
             // If we already have this group locally, preserve the existing groupKey
             // unless the incoming payload carries a new one (key rotation).
-            final existing = await GroupDao().getGroupById(gid);
             final incomingVersion = decoded['keyVersion'] as int?;
             final carriesKey =
                 receivedGroupKey != null && receivedGroupKey.isNotEmpty;
@@ -302,7 +317,7 @@ class MessageRouter {
             // rollout does not break groups that predate versioning.
             if (carriesKey &&
                 !acceptsControlVersion(
-                  localVersion: existing?.keyVersion ?? 0,
+                  localVersion: existingGroup?.keyVersion ?? 0,
                   incomingVersion: incomingVersion,
                 )) {
               CrashReporter.recordError(
@@ -311,7 +326,7 @@ class MessageRouter {
               );
               return;
             }
-            final effectiveKey = receivedGroupKey ?? existing?.groupKey;
+            final effectiveKey = receivedGroupKey ?? existingGroup?.groupKey;
             await GroupDao().insertGroup(
               Group(
                 id: gid,
@@ -319,12 +334,22 @@ class MessageRouter {
                 memberUids: memberUids.isEmpty ? [uid, senderUid] : memberUids,
                 createdAt: timestamp,
                 groupKey: effectiveKey,
-                keyVersion: incomingVersion ?? existing?.keyVersion ?? 0,
+                keyVersion: incomingVersion ?? existingGroup?.keyVersion ?? 0,
+                // Preserve this group's scheme. A control that does not name
+                // one (a legacy client) must not flip a group either way: only
+                // a Welcome moves a group onto MLS, and only the group's own
+                // creator decides that.
+                cryptoVersion: mlsJoined
+                    ? GroupCrypto.mls
+                    : (incomingCrypto ??
+                          existingGroup?.cryptoVersion ??
+                          GroupCrypto.legacySharedKey),
               ),
             );
-            // A kick changed the roster: survivors must rotate the key so the
-            // removed member's copy dies. The rotating broadcast carries the
-            // new key (see GroupActions.rotateGroupKey).
+            // A kick changed the roster. The elected survivor then revokes the
+            // departed member: an MLS commit that removes them from the tree,
+            // or a shared-key rotation for a legacy group. See
+            // groupRekeyWatcherProvider.
             if (wasKick) {
               bus.fire(RefreshEvent(type: 'rekey', chatId: gid));
             }
@@ -342,6 +367,7 @@ class MessageRouter {
           return;
         }
       }
+
       final chatId = (groupId != null && groupId.isNotEmpty)
           ? groupId
           : _chatId(uid, senderUid);
@@ -452,8 +478,63 @@ class MessageRouter {
     }
   }
 
-  /// Handles a group_packet pushed by the relay — encrypted with the shared
-  /// groupKey, addressed to the group inbox (not to an individual user).
+  /// Decrypts a 1:1 payload, on the ratchet when the envelope says so.
+  ///
+  /// A v2 envelope is never retried on the legacy path. The sender chose the
+  /// ratchet deliberately, so a failure here is a real failure — and falling
+  /// back would let anyone who can corrupt one field force the message onto the
+  /// weaker scheme.
+  Future<String> _decryptDirect({
+    required String senderUid,
+    required String encodedPayload,
+  }) async {
+    final envelope = WireEnvelope.tryDecode(encodedPayload);
+    if (envelope != null && envelope.kind == WireEnvelope.kindSignal) {
+      final plaintext = await RatchetSession.instance.decrypt(
+        senderUid,
+        envelope,
+      );
+      // The chat is now demonstrably on the ratchet, so record it: replies must
+      // use the same scheme, and this is the only evidence we have that the
+      // peer actually speaks it.
+      await chatDao.setCryptoVersion(
+        _chatId(uid, senderUid),
+        ChatCrypto.doubleRatchet,
+      );
+      return plaintext;
+    }
+
+    final keyPair = await KeyStore.getKeyPair();
+    if (keyPair == null) throw StateError('no identity key available');
+    return engine.decryptMessage(
+      payload: CryptoPayload.decode(encodedPayload),
+      recipientKeyPair: keyPair,
+    );
+  }
+
+  /// Joins an MLS group from a Welcome, reporting whether it worked.
+  ///
+  /// A failure leaves the group on the legacy path rather than half-joined:
+  /// `joinFromWelcome` validates the group id and ciphersuite before it commits
+  /// anything, so a forged or mismatched Welcome cannot corrupt local state.
+  Future<bool> _joinMlsGroup(String groupId, String welcomeBase64) async {
+    try {
+      await MlsGroupService.instance.joinFromWelcome(
+        expectedGroupId: groupId,
+        welcome: base64Decode(welcomeBase64),
+      );
+      return true;
+    } catch (e) {
+      CrashReporter.recordError(
+        error: 'MLS welcome join failed for $groupId: $e',
+        source: 'mls-join',
+      );
+      return false;
+    }
+  }
+
+  /// Handles a group_packet pushed by the relay — either an MLS message, or a
+  /// ciphertext under the legacy shared groupKey.
   Future<void> _handleGroupPacket(Map<String, dynamic> msg) async {
     final senderUid = msg['senderUid'] as String? ?? '';
     final packetId = msg['packetId'] as String? ?? '';
@@ -476,22 +557,73 @@ class MessageRouter {
       return;
     }
 
-    // Look up the local group and its symmetric groupKey.
     final localGroup = await GroupDao().getGroupById(groupId);
     if (localGroup == null) return; // group not known locally — ignore
-    if (!localGroup.memberUids.contains(senderUid))
-      return; // sender was removed
-    final groupKey = localGroup.groupKey;
-    if (groupKey == null || groupKey.isEmpty) return; // no key available
 
+    // MLS authenticates the sender cryptographically: the uid comes from the
+    // ratchet-tree leaf that produced the message, so it cannot be claimed by
+    // anyone outside the group and it cannot be forged by the relay. The legacy
+    // path has no such binding, so there the relay-reported uid is checked
+    // against the roster instead.
+    var senderUidResolved = senderUid;
+    final Map<String, dynamic> decoded;
     try {
-      final cryptoPayload = CryptoPayload.decode(encodedPayload);
-      final decrypted = await engine.decryptGroupMessage(
-        payload: cryptoPayload,
-        groupKeyBase64: groupKey,
-      );
+      if (localGroup.usesMls) {
+        final envelope = WireEnvelope.tryDecode(encodedPayload);
+        if (envelope == null || envelope.kind != WireEnvelope.kindMls) {
+          // Legacy ciphertext in an MLS group: unreadable and not ours.
+          return;
+        }
+        final result = await MlsGroupService.instance.decrypt(
+          groupId: groupId,
+          message: envelope.ciphertext,
+        );
+        senderUidResolved = result.senderUid ?? senderUid;
 
-      final decoded = jsonDecode(decrypted) as Map<String, dynamic>;
+        if (result.evicted) {
+          // This commit removed *us*. Drop the group and its MLS state: the
+          // epoch secrets this device holds no longer derive anything the group
+          // uses, and keeping the thread would show a conversation it can
+          // silently never read again.
+          await GroupDao().deleteGroup(groupId);
+          try {
+            await MlsGroupService.instance.deleteGroup(groupId);
+          } catch (_) {}
+          bus.fire(RefreshEvent(type: 'messages', chatId: groupId));
+          return;
+        }
+
+        if (result.appliedCommit) {
+          // A commit advanced the epoch — a member was added or removed. The
+          // roster in the tree is authoritative, so adopt it.
+          final members = await MlsGroupService.instance.members(groupId);
+          if (members.isNotEmpty) {
+            await GroupDao().updateMembers(groupId, members);
+          }
+          bus.fire(RefreshEvent(type: 'messages', chatId: groupId));
+        }
+
+        if (result.plaintext == null) {
+          // A control message (commit/proposal) with nothing to display. Ack it
+          // so the relay drops its cached copy.
+          client.ackGroupPacket(packetId: packetId, groupId: groupId);
+          return;
+        }
+        decoded = jsonDecode(result.plaintext!) as Map<String, dynamic>;
+      } else {
+        if (!localGroup.memberUids.contains(senderUid)) {
+          return; // sender was removed
+        }
+        final groupKey = localGroup.groupKey;
+        if (groupKey == null || groupKey.isEmpty) return; // no key available
+        final cryptoPayload = CryptoPayload.decode(encodedPayload);
+        final decrypted = await engine.decryptGroupMessage(
+          payload: cryptoPayload,
+          groupKeyBase64: groupKey,
+        );
+        decoded = jsonDecode(decrypted) as Map<String, dynamic>;
+      }
+
       final text = decoded['text'] ?? '';
       final messageType = decoded['type'] ?? 'text';
       final mediaKey = decoded['mediaKey'];
@@ -501,7 +633,7 @@ class MessageRouter {
 
       // Verify sender signature (drops relay/member spoofing).
       final sigOk = await _verifyGroupSender(
-        senderUid: senderUid,
+        senderUid: senderUidResolved,
         packetId: packetId,
         text: text,
         groupId: groupId,
@@ -509,7 +641,7 @@ class MessageRouter {
       );
       if (!sigOk) {
         CrashReporter.recordError(
-          error: 'group sig invalid from $senderUid in $groupId',
+          error: 'group sig invalid from $senderUidResolved in $groupId',
           source: 'group-verify',
         );
         return;
@@ -519,7 +651,7 @@ class MessageRouter {
       String contactName =
           decoded['senderName'] as String? ?? senderNameFromRelay;
       if (contactName.isEmpty) {
-        final existing = await contactDao.getContactByUid(senderUid);
+        final existing = await contactDao.getContactByUid(senderUidResolved);
         if (existing != null && !_isFallbackName(existing.username)) {
           contactName = existing.username;
         } else {
@@ -530,7 +662,7 @@ class MessageRouter {
       final message = ChatMessage(
         id: packetId,
         chatId: groupId,
-        senderUid: senderUid,
+        senderUid: senderUidResolved,
         recipientUid: uid,
         text: text,
         mediaKey: mediaKey,
@@ -783,6 +915,11 @@ final messageRouterProvider = Provider.family<MessageRouter, String>((
     contactDao: ref.watch(contactDaoProvider),
     bus: ref.watch(refreshBusProvider),
   );
+
+  // Publish this device's key material at startup: an MLS KeyPackage so a peer
+  // can add it to a group while it is offline, and a libsignal prekey bundle so
+  // a peer can open a Double Ratchet session with it.
+  ref.watch(keyPublicationProvider);
 
   // Idempotent start — safe even if provider is rebuilt (won't duplicate
   // WebSocket connections or stream listeners).

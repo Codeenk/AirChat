@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.7.0+38
+version: 1.8.0+39
 
 environment:
   sdk: ^3.13.1
@@ -67,6 +67,13 @@ dependencies:
   # SECURITY.md's "no custom crypto" rule. Rust-backed OpenMLS; prebuilt
   # native libs are fetched by Dart build hooks (arm64 + armv7 for Android).
   openmls: ^3.2.0
+  # Signal Protocol (X3DH/PQXDH + Double Ratchet) for 1:1 forward secrecy.
+  # Official libsignal Rust core via Dart FFI; same "vetted implementation"
+  # rule as openmls. Native libs come from the package's build hook.
+  libsignal: ^7.4.1
+  # Per-address mutex around the ratchet's load/advance/store cycle, which
+  # SessionStore documents as required (concurrent sends reuse message keys).
+  synchronized: ^3.4.1
 
 dev_dependencies:
   flutter_test:

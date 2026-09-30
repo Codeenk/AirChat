@@ -27,11 +27,22 @@ class MlsDecryptResult {
   /// sender chose freely: it is bound to a leaf the group admitted.
   final String? senderUid;
 
+  /// True when this message was the commit that removed **this device** from
+  /// the group.
+  ///
+  /// A removed member cannot merge the commit that evicts it, so openmls
+  /// refuses. That refusal is a fact about this member's status, not an error:
+  /// the caller must drop the group. Reporting it as a failure would leave the
+  /// member holding a thread it can never read again while every later message
+  /// went unexplained.
+  final bool evicted;
+
   const MlsDecryptResult({
     this.plaintext,
     this.appliedCommit = false,
     this.epoch = 0,
     this.senderUid,
+    this.evicted = false,
   });
 }
 
@@ -466,8 +477,21 @@ class MlsGroupService {
 
       var appliedCommit = false;
       if (processed.messageType == ProcessedMessageType.stagedCommit) {
-        await engine.mergePendingCommit(groupIdBytes: ids);
-        appliedCommit = true;
+        try {
+          await engine.mergePendingCommit(groupIdBytes: ids);
+          appliedCommit = true;
+        } catch (e) {
+          // The one expected failure: this device was removed by the commit it
+          // just processed, and openmls will not let an evicted member apply
+          // it. Anything else is a real error and must surface.
+          if (!e.toString().toLowerCase().contains('evict')) rethrow;
+          await engine.clearPendingCommit(groupIdBytes: ids);
+          return MlsDecryptResult(
+            epoch: epoch,
+            senderUid: senderUid,
+            evicted: true,
+          );
+        }
       }
 
       final bytes = processed.applicationMessage;

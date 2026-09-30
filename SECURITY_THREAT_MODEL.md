@@ -29,11 +29,13 @@ with a small trusted surface and honest limits.
 
 ### 2.2 Transport / network secrecy
 - Message content should be encrypted before it leaves the device.
-- Each 1:1 message should use fresh key material. Note the precise guarantee:
-  fresh per-message keys bind a compromise to a single message, but because the
-  recipient decrypts with a long-term key that never ratchets, this is **not**
-  forward secrecy against long-term key compromise. See
-  `SECURITY_DESIGN.md` §3.1.
+- 1:1 messages should use fresh key material, and the guarantee should be
+  stated per chat rather than averaged. A chat created on v1.8+ between two
+  peers that publish a prekey bundle runs the Signal Protocol's double ratchet,
+  which *is* forward secrecy against long-term key compromise and heals after a
+  compromise. A chat created before that still uses per-message ephemeral keys
+  against a long-term recipient key, which is key freshness and **not** forward
+  secrecy. See `SECURITY_DESIGN.md` §3.1.
 - Authentication should be used so a relay or network adversary cannot easily
   inject or impersonate traffic.
 
@@ -142,7 +144,11 @@ or permissions must satisfy these rules:
    optional cosmetics.
 3. Forward secrecy and key freshness should be preserved for the paths that
    rely on them.
-4. Group key material is high-value and must be handled with extra care.
+4. Group key material is high-value and must be handled with extra care. In an
+   MLS group there is no shared key to guard: the epoch secret is what must not
+   be duplicated, retained past its epoch, or left behind after this device
+   leaves or is removed. `maxPastEpochs: 0` and `numberOfResumptionPsks: 0`
+   enforce the retention half of that.
 5. Decrypted plaintext and media should live only as long as needed.
 6. Logs, debug surfaces, clipboard, and export paths must not silently leak
    sensitive content.

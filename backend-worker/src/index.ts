@@ -9,6 +9,11 @@ import {
   handleTestPush,
 } from "./routes/auth";
 import { handleLookup } from "./routes/directory";
+import {
+  handlePublishKey,
+  handleFetchKey,
+  handleRevokeKeys,
+} from "./routes/keys";
 import { handleMediaUpload, handleMediaDownload } from "./routes/media";
 import { verifyWithStoredKey } from "./utils/crypto-verify";
 
@@ -72,6 +77,19 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   // so it can route group_packet wakes to all members.
   if (url.pathname === "/api/group/register" && request.method === "POST") {
     return handleRegisterGroup(request, env);
+  }
+
+  // 3e. Published key material (MLS KeyPackage / Signal PreKeyBundle).
+  // Opaque, expiring, unparsed by the relay — it exists so two devices that
+  // are never online together can still start a session.
+  if (url.pathname === "/api/keys/publish" && request.method === "POST") {
+    return handlePublishKey(request, env);
+  }
+  if (url.pathname === "/api/keys/lookup" && request.method === "GET") {
+    return handleFetchKey(request, env);
+  }
+  if (url.pathname === "/api/keys/revoke" && request.method === "POST") {
+    return handleRevokeKeys(request, env);
   }
 
   // 4. Ephemeral Encrypted Media Upload (KV, auto-expires in 24h)

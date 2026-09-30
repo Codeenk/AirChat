@@ -4,12 +4,11 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 import '../crash/crash_reporter.dart';
+import '../crypto/direct_cipher.dart';
 import '../crypto/key_store.dart';
 import '../crypto/relay_auth.dart';
 import '../crypto/signing_engine.dart';
-import '../crypto/sodium_engine.dart';
 import '../database/app_database.dart';
-import '../database/daos/contact_dao.dart';
 import '../database/daos/message_dao.dart';
 import '../network/message_status.dart';
 import '../network/websocket_client.dart';
@@ -31,14 +30,7 @@ class QuickReplySender {
       final keyPair = await KeyStore.getKeyPair();
       if (myUid == null || keyPair == null) return false;
 
-      final contact = await ContactDao().getContactByUid(recipientUid);
-      final pubKey = contact?.identityPublicKey;
-      if (pubKey == null || pubKey.isEmpty) return false;
-
       await AppDatabase.instance; // open (or reuse) encrypted DB
-
-      final engine = SodiumEngine();
-      final recipientPub = await engine.importPublicKey(pubKey);
 
       final packetId = DateTime.now().microsecondsSinceEpoch.toString();
       final chatId = _chatId(myUid, recipientUid);
@@ -56,15 +48,18 @@ class QuickReplySender {
         }
       } catch (_) {}
 
-      final payload = await engine.encryptMessage(
-        plainText: jsonEncode({
+      // Prefers an established Double Ratchet session and falls back to the
+      // legacy envelope: a quick reply must be able to answer whichever scheme
+      // the conversation is actually using.
+      final encryptedPayload = await encryptToOneToOne(
+        recipientUid,
+        jsonEncode({
           'text': text,
           'type': 'text',
           if (sig.isNotEmpty) 'sig': sig,
         }),
-        recipientPublicKey: recipientPub,
-        senderKeyPair: keyPair,
       );
+      if (encryptedPayload == null) return false;
 
       final now = DateTime.now().millisecondsSinceEpoch;
 
@@ -98,7 +93,7 @@ class QuickReplySender {
 
       ws.sendPacket(
         recipientUid: recipientUid,
-        encryptedPayload: payload.encode(),
+        encryptedPayload: encryptedPayload,
         packetId: packetId,
       );
 

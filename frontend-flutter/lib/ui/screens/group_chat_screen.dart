@@ -12,7 +12,9 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/crypto/key_store.dart';
+import '../../core/crypto/mls_group_service.dart';
 import '../../core/crypto/signing_engine.dart';
+import '../../core/crypto/wire_envelope.dart';
 import '../../core/database/daos/contact_dao.dart';
 import '../../core/database/daos/message_dao.dart';
 import '../../core/device/device_info_helper.dart';
@@ -306,26 +308,6 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
     required String myUid,
     required String senderName,
   }) async {
-    final groupKey = group.groupKey;
-    if (groupKey == null || groupKey.isEmpty) {
-      // Fallback: no groupKey yet (stale local record) — use legacy N-send.
-      await _legacyFanOut(
-        text: text,
-        type: type,
-        mediaKey: mediaKey,
-        secretKeyHex: secretKeyHex,
-        nonceHex: nonceHex,
-        replyId: replyId,
-        replyText: replyText,
-        replyType: replyType,
-        replyIsMe: replyIsMe,
-        group: group,
-        myUid: myUid,
-        packetId: packetId,
-      );
-      return;
-    }
-
     final engine = ref.read(sodiumEngineProvider);
 
     // Sign the message so receivers can verify it came from a member
@@ -361,6 +343,55 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
           'isMe': replyIsMe,
         },
     });
+
+    // MLS groups carry no shared key at all: each message's key comes from the
+    // group's epoch secret, and a removed member loses it at the next commit.
+    // There is nothing to fall back to, so a failure here is surfaced rather
+    // than silently re-sent under a scheme the group is not using.
+    if (group.usesMls) {
+      try {
+        final sealed = await MlsGroupService.instance.encrypt(
+          groupId: group.id,
+          plaintext: Uint8List.fromList(utf8.encode(payload)),
+        );
+        ref
+            .read(websocketClientProvider(myUid))
+            .sendGroupPacket(
+              groupId: group.id,
+              encryptedPayload: WireEnvelope(
+                kind: WireEnvelope.kindMls,
+                messageType: 0,
+                ciphertext: sealed,
+              ).encode(),
+              packetId: packetId,
+              senderName: senderName,
+            );
+      } catch (e) {
+        debugPrint('[AirChat] MLS group send failed');
+      }
+      return;
+    }
+
+    // Legacy shared-key group. A stale local record with no key falls back to
+    // the per-member N-send path.
+    final groupKey = group.groupKey;
+    if (groupKey == null || groupKey.isEmpty) {
+      await _legacyFanOut(
+        text: text,
+        type: type,
+        mediaKey: mediaKey,
+        secretKeyHex: secretKeyHex,
+        nonceHex: nonceHex,
+        replyId: replyId,
+        replyText: replyText,
+        replyType: replyType,
+        replyIsMe: replyIsMe,
+        group: group,
+        myUid: myUid,
+        packetId: packetId,
+      );
+      return;
+    }
 
     try {
       final enc = await engine.encryptGroupMessage(

@@ -42,3 +42,22 @@ CREATE TABLE IF NOT EXISTS group_memberships (
 CREATE INDEX IF NOT EXISTS idx_group_memberships_member ON group_memberships(member_uid);
 CREATE INDEX IF NOT EXISTS idx_group_memberships_group ON group_memberships(group_id);
 CREATE INDEX IF NOT EXISTS idx_group_memberships_expiry ON group_memberships(expires_at);
+
+-- Published key material for asynchronous session setup: an RFC 9420 MLS
+-- KeyPackage (`kind = 'mls'`) or a libsignal PreKeyBundle (`kind = 'signal'`).
+--
+-- `payload` is opaque to the relay: it is public key material the owner chose
+-- to publish, stored verbatim and never parsed, so the relay learns nothing
+-- about who talks to whom. `expires_at` gives every row a TTL (SECURITY.md:
+-- "All stored data must have TTLs — no permanent server-side records") and a
+-- republish replaces the row, so there is no history to retain.
+CREATE TABLE IF NOT EXISTS key_packages (
+    uid        TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    payload    TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (uid, kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_key_packages_expiry ON key_packages(expires_at);

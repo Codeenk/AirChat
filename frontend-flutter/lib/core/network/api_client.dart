@@ -113,6 +113,62 @@ class ApiClient {
     }
   }
 
+  /// Publishes this device's public key material for asynchronous session
+  /// setup — an MLS KeyPackage or a libsignal prekey bundle.
+  ///
+  /// The payload is opaque to the relay and expires server-side, so a device
+  /// that stops republishing is not pre-keyed forever. Signed as
+  /// `key_publish|uid|kind|payload` so knowing a uid is not enough to replace
+  /// its published bundle and steer new sessions to an attacker's key.
+  Future<bool> publishKeyPackage({
+    required String uid,
+    required String kind,
+    required String payload,
+  }) async {
+    try {
+      final signature = await _sign('key_publish|$uid|$kind|$payload');
+      if (signature == null || signature.isEmpty) return false;
+      final uri = Uri.parse("$baseUrl/api/keys/publish");
+      final response = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'uid': uid,
+              'kind': kind,
+              'payload': payload,
+              'signature': signature,
+            }),
+          )
+          .timeout(const Duration(seconds: 15));
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Fetches a peer's published key material.
+  ///
+  /// Returns null when the peer has published nothing of that kind (or it has
+  /// expired). That is the signal a caller uses to decide the peer cannot speak
+  /// the newer protocol yet — it is not an error.
+  Future<String?> fetchKeyPackage({
+    required String uid,
+    required String kind,
+  }) async {
+    try {
+      final uri = Uri.parse("$baseUrl/api/keys/lookup?uid=$uid&kind=$kind");
+      final response = await http.get(uri).timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) return null;
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      final payload = decoded['payload'] as String?;
+      if (payload == null || payload.isEmpty) return null;
+      return payload;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<bool> sendFcmToken(String token) async {
     try {
       final uid = await _getStoredUid();

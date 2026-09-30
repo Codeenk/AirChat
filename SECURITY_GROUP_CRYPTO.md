@@ -166,17 +166,21 @@ current status:
    holds. This closes a real bug that existed independently of MLS —
    replaying an old `group_add`/`group_invite` used to **restore a superseded
    group key**, silently undoing the rotation that revoked a removed member.
+   For MLS itself, commits are applied immediately on receipt (a staged commit
+   is merged), which is what advances the epoch and revokes a removed member.
    Still open: a *total* order across concurrent membership changes (two writers
-   can still pick the same next version) and epoch-divergence handling.
-2. **Key packages — likely smaller than first thought.** Each device needs an
-   MLS KeyPackage to be added, and joins need Welcome messages. This was
-   written down as "a relay + directory change", but reading the code shows the
-   existing **encrypted 1:1 channel can carry them**: a KeyPackage request and
-   a Welcome are just payloads on a wire the relay already forwards opaquely,
-   exactly like today's `group_invite`. The relay needs no new storage for
-   them. The real cost is the *round trip* — the current invite flow is
-   fire-and-forget, while MLS needs each member's KeyPackage before a group can
-   be created.
+   can still pick the same next version) and epoch-divergence handling — the
+   relay is unordered, so two simultaneous commits from different members are
+   not yet reconciled.
+2. **Key packages — done.** Each device publishes an MLS KeyPackage and a
+   libsignal prekey bundle through `POST /api/keys/publish`, and fetches a
+   peer's with `GET /api/keys/lookup`. Both are opaque, expiring rows in a
+   `key_packages` table (30-day sliding TTL, replaced rather than accumulated) —
+   the relay never parses them, so it still learns no contact graph. The
+   Welcome itself rides the existing encrypted 1:1 channel as a `group_invite`
+   payload, so no new relay surface was needed for it either. The round-trip
+   cost is real and handled by falling back: if any member has no published
+   KeyPackage, the group is created on the legacy shared key instead.
 3. **State storage — in place at the service layer.** MLS group state (ratchet
    tree, epoch secrets) must be persisted encrypted, replacing
    `groups.groupKey`. `openmls` persists its own state in a SQLCipher database
@@ -198,14 +202,15 @@ current status:
    as before and nothing is rewritten behind the user's back. Lazy migration is
    still available later; it is not required for the rollout and is not being
    done speculatively.
-6. **Interop / version gating — half done.** The state field exists
-   (`GroupCrypto` / `Group.cryptoVersion` / `groups.crypto_version`), and
-   `Group.usesMls` is the single decision point. Still open: advertising
-   `cryptoVersion` in `group_invite` / `group_add` / `group_kick`, and refusing
-   to send MLS material to a peer that has not advertised support. Until that
-   exists the transport must not be switched on, because an older client cannot
-   read an MLS epoch at all — it would not fail gracefully, it would simply go
-   silent.
+6. **Interop / version gating — done, and it is what makes the rollout safe.**
+   `cryptoVersion` is advertised in every `group_invite` / `group_add` /
+   `group_kick`, preserved when a control does not name one, and `Group.usesMls`
+   is the single decision point for both sending and receiving. An MLS group is
+   created only when **every** invited member has a published KeyPackage —
+   all-or-nothing on purpose, because an older client cannot read an MLS epoch
+   at all: it does not fail gracefully, it goes silent. One such member keeps
+   the whole group on the legacy scheme, which is the only outcome that leaves
+   everybody able to read the conversation.
 7. **Verification — partly done, and now load-bearing.** Cross-client interop
    tests, epoch-divergence and out-of-order-commit tests — and, per
    `SECURITY_THREAT_MODEL.md`, an external audit before group secrecy is claimed
@@ -306,10 +311,12 @@ read earlier traffic** (forward secrecy).
 
 ### Known limitations of this layer, stated plainly
 
-- **It is not wired to the UI or the relay.** Nothing in the app creates an MLS
-group yet, no KeyPackage is published or fetched, and no Welcome is delivered.
-Group messaging behaves exactly as it did in v1.6.5. This is the transport work
-(step 2), and it is what remains before the feature exists for a user.
+- **It is now wired to the relay and the UI** — see §8. The transport work
+  (step 2) is done: key packages are published and fetched through the relay,
+  group creation goes through MLS when every member can take it, and commits and
+  Welcomes travel on channels that already existed. What remains open is §6
+  step 7 (epoch-divergence hardening and an external audit), not a missing
+  transport.
 - **No application-supplied AAD.** `createMessage` accepts an AAD but the only
   read path, `processMessage`, takes none — so a payload sealed with one could
   not be opened, and the parameter would be decorative. Binding to the correct
@@ -321,3 +328,70 @@ Group messaging behaves exactly as it did in v1.6.5. This is the transport work
   that to app background/lock is not done.
 - **No size measurement of the wired-up feature yet**, only of the library:
   the packaging measurement above.
+
+## 8. The transport, as wired (v1.8.0)
+
+### One envelope for two new ciphertext families
+
+The legacy payload is `{ct, n, epk}` — a bare blob with no way to say what
+produced it. Adding a second family therefore needs an explicit envelope, so
+`lib/core/crypto/wire_envelope.dart` defines:
+
+```json
+{ "v": 2, "k": "sig"|"mls", "t": <libsignal message type>, "c": "<base64>" }
+```
+
+A released client reads only `ct`/`n`/`epk`, so a v2 payload presents it with an
+empty ciphertext and its AEAD open fails: the message is **dropped, never
+misread**. That is why a v2 message is only ever sent to a peer that has
+published the corresponding key material. `t` is the libsignal message type, so
+the receiver can hand a pre-key message (session establishment) and a normal
+Signal message to the right decrypt path without guessing.
+
+### Group traffic
+
+- **Creating a group** (`GroupActions.createGroup`) asks the relay for each
+  member's KeyPackage. All present → `MlsGroupService.createGroup` +
+  `addMembers`; the Commit is self-applied, the Welcome is sent to each member
+  as a `group_invite` carrying `mlsWelcome` and `cryptoVersion: 2`, and the
+  group row is stored with `groupKey: null`. Any member missing → the legacy
+  path, unchanged.
+- **Receiving an invite**: the Welcome is joined *before* the group row is
+  written, and `joinFromWelcome` validates the group id and the ciphersuite
+  first, so a forged or mis-addressed Welcome cannot corrupt local state.
+  Failure falls back to the legacy scheme for that group rather than
+  half-joining.
+- **Sending** (`group_chat_screen`): an MLS group encrypts through
+  `MlsGroupService` and sends a `k: "mls"` envelope on `group_packet`. There is
+  no fallback — a failure is surfaced, because re-sending under the shared-key
+  scheme would be a silent downgrade of a group that is not on it.
+- **Commits** (add/remove) are sent on the group channel as `k: "mls"`
+  envelopes. On receipt the epoch is advanced; the roster is then adopted from
+  the ratchet tree, which is authoritative, rather than from the relay's copy.
+- **Removal**: the elected survivor (lexicographically smallest remaining uid —
+  all survivors compute the same rule, so exactly one commit happens) removes
+  whoever is in the tree but no longer in the roster. A removed member cannot
+  merge the commit that evicts it; openmls refuses, and that refusal is reported
+  as `evicted` rather than swallowed as an error, so the member's client drops
+  the group instead of holding a thread it can never read again.
+
+### 1:1 traffic (the same envelope, `k: "sig"`)
+
+For a **new** chat, the client fetches the peer's published prekey bundle and,
+if it is present and its identity key matches the identity the directory (and
+the safety number) holds, establishes a libsignal session and records
+`chat_threads.crypto_version = 2`. Every later message in that chat uses the
+ratchet. A chat that already carried messages is never switched, so no peer is
+sent a message it cannot read.
+
+The bundle identity check is the one that matters: without it a hostile relay
+could serve its own bundle and own the session, because first-use trust would
+have nothing to compare against.
+
+Tests: `test/mls_transport_test.dart` runs an application message and a commit
+through the real envelope on real OpenMLS engines, and asserts that a removed
+member is reported evicted and then cannot read the next message;
+`test/ratchet_session_test.dart` runs two real libsignal devices through
+establishment, both directions, out-of-order delivery, bundle republishing and
+tamper rejection, and asserts that the ratchet identity is the app's own X25519
+key.

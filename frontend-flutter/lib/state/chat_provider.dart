@@ -6,11 +6,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 import '../core/crypto/key_store.dart';
+import '../core/crypto/ratchet_session.dart';
 import '../core/crypto/signing_engine.dart';
 import '../core/database/daos/message_dao.dart';
 import '../models/chat_thread.dart';
 import '../models/message_payload.dart';
 import 'connection_provider.dart';
+import 'crypto_provider.dart';
 import 'refresh_bus.dart';
 
 const _sendAckTimeout = Duration(seconds: 12);
@@ -218,6 +220,7 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
         secretKeyHex: msg.secretKeyHex,
         nonceHex: msg.nonceHex,
         replyTo: msg.hasReply ? msg : null,
+        recipientUid: msg.recipientUid,
         recipientPublicKeyBase64: recipientPublicKeyBase64,
         senderKeyPair: senderKeyPair,
       );
@@ -240,14 +243,10 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     String? secretKeyHex,
     String? nonceHex,
     ChatMessage? replyTo,
+    required String recipientUid,
     required String recipientPublicKeyBase64,
     required SimpleKeyPair senderKeyPair,
   }) async {
-    final engine = ref.read(sodiumEngineProvider);
-    final recipientPubKey = await engine.importPublicKey(
-      recipientPublicKeyBase64,
-    );
-
     // Sign the payload so the recipient can prove it came from us and not
     // from a compromised/curious relay. Missing key = unsigned (compat).
     String sig = '';
@@ -277,6 +276,25 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
         },
     });
 
+    // Which scheme this chat is on is recorded on the chat, not decided per
+    // message, so both sides stay on the same one and a message can never be
+    // sent under a scheme the peer is not using for that conversation.
+    final usesRatchet = await _maybeEnableRatchet(
+      chatId: chatId,
+      peerUid: recipientUid,
+    );
+    if (usesRatchet) {
+      final envelope = await RatchetSession.instance.encrypt(
+        recipientUid,
+        messageJson,
+      );
+      return envelope.encode();
+    }
+
+    final engine = ref.read(sodiumEngineProvider);
+    final recipientPubKey = await engine.importPublicKey(
+      recipientPublicKeyBase64,
+    );
     final cryptoPayload = await engine.encryptMessage(
       plainText: messageJson,
       recipientPublicKey: recipientPubKey,
@@ -284,6 +302,37 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
     );
 
     return cryptoPayload.encode();
+  }
+
+  /// Puts a chat on the Double Ratchet if it is new enough to switch.
+  ///
+  /// "New only" is the whole point: a chat that already carried messages keeps
+  /// the scheme it used for them. Switching mid-conversation would leave
+  /// whichever messages crossed the switch unreadable on one side, and the peer
+  /// may be a released build that cannot read a ratchet message at all.
+  ///
+  /// Returns whether the chat is on the ratchet for this message.
+  Future<bool> _maybeEnableRatchet({
+    required String chatId,
+    required String peerUid,
+  }) async {
+    try {
+      final dao = ref.read(chatDaoProvider);
+      final current = await dao.getCryptoVersion(chatId);
+      if (current != null && ChatCrypto.usesRatchet(current)) return true;
+
+      // The message being sent is already stored, so a brand-new chat counts 1.
+      // Anything higher means this conversation predates the ratchet and stays
+      // where it is.
+      final stored = await ref.read(messageDaoProvider).getMessageCount(chatId);
+      if (stored > 1) return false;
+
+      if (await ensureRatchetSession(peerUid)) {
+        await dao.setCryptoVersion(chatId, ChatCrypto.doubleRatchet);
+        return true;
+      }
+    } catch (_) {}
+    return false;
   }
 
   Future<void> sendTextMessage({
@@ -338,6 +387,7 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
       text: text,
       type: 'text',
       replyTo: replyTo,
+      recipientUid: recipientUid,
       recipientPublicKeyBase64: recipientPublicKeyBase64,
       senderKeyPair: senderKeyPair,
     );
@@ -414,6 +464,7 @@ class ChatStateNotifier extends StateNotifier<List<ChatMessage>> {
       secretKeyHex: secretKeyHex,
       nonceHex: nonceHex,
       replyTo: replyTo,
+      recipientUid: recipientUid,
       recipientPublicKeyBase64: recipientPublicKeyBase64,
       senderKeyPair: senderKeyPair,
     );

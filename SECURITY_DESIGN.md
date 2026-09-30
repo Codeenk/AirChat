@@ -61,9 +61,28 @@ it** — past and future — since the sender's ephemeral public key travels
 alongside each ciphertext. There is likewise no post-compromise security:
 compromising that key does not heal, and nothing rotates it automatically.
 
-Reaching the standard guarantee requires replacing this with a ratchet
-(X3DH + Double Ratchet), which is tracked as open work. Until it lands, the
-accurate claim for 1:1 is **per-message key freshness**, not forward secrecy.
+**Where the Double Ratchet applies.** For a chat created between two devices
+that publish a libsignal pre-key bundle, the 1:1 path is the Signal Protocol's
+X3DH/PQXDH handshake followed by a double ratchet (`libsignal`, the upstream
+Rust implementation). There, the receive chain advances per message: a
+compromised message key covers one message, and the DH ratchet heals after a
+compromise. That is forward secrecy and post-compromise security as normally
+understood, and it is what the app claims for those chats.
+
+The legacy construction above is **still the path for any chat that already
+exists**. A chat's scheme is recorded when the chat is created and is never
+rewritten, because switching mid-conversation would make whichever messages
+crossed the switch unreadable on one side — and a peer on a released build
+cannot process a ratchet message at all. So the honest per-chat claim is:
+
+- new chat, both sides upgraded → Double Ratchet (§ above);
+- any pre-existing chat → per-message key freshness, **not** forward secrecy.
+
+The ratchet reuses the app's X25519 identity key as its Signal identity, so the
+safety number covers the identity that authenticates the ratchet rather than a
+second, unverified identity alongside it. A published bundle whose identity key
+does not match the identity the directory (and the safety number) holds for that
+peer is refused, so the relay cannot substitute its own bundle.
 
 ### 3.2 Sender authentication
 Sender authenticity is handled with Ed25519 signatures where the design calls
@@ -77,8 +96,18 @@ The intent is that a relay or network observer should not be able to easily
 impersonate a contact or inject authenticated actions.
 
 ### 3.3 Group cryptography
-Groups use a shared symmetric key for members. That key is distributed through
-encrypted channels to members and rotated when membership changes.
+A group created between members that all publish an MLS KeyPackage is keyed by
+**RFC 9420 MLS** (`openmls`), so it has a real TreeKEM ratchet: forward secrecy,
+post-compromise security, and revocation that actually removes a member's
+ability to read (the commit advances the epoch secret they hold). Requirements
+are enforced through membership commits rather than key rotation.
+
+Groups created before MLS existed, or where any invited member has no published
+KeyPackage, use the shared symmetric key described below. As with 1:1, an
+existing group is never converted in place: a v1.x client cannot process an MLS
+epoch at all, so converting would lock that member out of a group they are in.
+
+The shared-key construction:
 
 Honest properties of this design — full detail in `SECURITY_GROUP_CRYPTO.md`:
 

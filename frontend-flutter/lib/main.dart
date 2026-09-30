@@ -8,6 +8,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:uuid/uuid.dart';
 
 import 'core/crash/crash_reporter.dart';
+import 'core/crypto/direct_cipher.dart';
 import 'core/crypto/key_store.dart';
 import 'core/crypto/signing_engine.dart';
 import 'core/crypto/sodium_engine.dart';
@@ -213,7 +214,6 @@ Future<void> _requeuePending(ProviderContainer container, String uid) async {
     final keyPair = await KeyStore.getKeyPair();
     if (keyPair == null) return;
     final signingKeyPair = await KeyStore.getSigningKeyPair();
-    final engine = SodiumEngine();
     for (final msg in pending) {
       final contact = await ContactDao().getContactByUid(msg.recipientUid);
       final pubKey = contact?.identityPublicKey;
@@ -224,7 +224,6 @@ Future<void> _requeuePending(ProviderContainer container, String uid) async {
         continue;
       }
       try {
-        final recipientPub = await engine.importPublicKey(pubKey);
         final chatId = ([uid, msg.recipientUid]..sort()).join('_');
         String sig = '';
         if (signingKeyPair != null) {
@@ -237,8 +236,9 @@ Future<void> _requeuePending(ProviderContainer container, String uid) async {
         }
         // Preserve ALL fields — a bare {text,type} resend would corrupt
         // media messages (missing keys) and replies (missing quote).
-        final payload = await engine.encryptMessage(
-          plainText: jsonEncode({
+        final encryptedPayload = await encryptToOneToOne(
+          msg.recipientUid,
+          jsonEncode({
             'text': msg.text,
             'type': msg.type,
             if (msg.mediaKey != null) 'mediaKey': msg.mediaKey,
@@ -253,13 +253,15 @@ Future<void> _requeuePending(ProviderContainer container, String uid) async {
                 'isMe': msg.replyIsMe,
               },
           }),
-          recipientPublicKey: recipientPub,
-          senderKeyPair: keyPair,
         );
+        if (encryptedPayload == null) {
+          await MessageDao().updateMessageStatus(msg.id, 'failed');
+          continue;
+        }
         final ws = container.read(websocketClientProvider(uid));
         ws.sendPacket(
           recipientUid: msg.recipientUid,
-          encryptedPayload: payload.encode(),
+          encryptedPayload: encryptedPayload,
           packetId: msg.id,
         );
         // If no ack arrives, flip to failed so the UI shows retry instead

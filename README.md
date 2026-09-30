@@ -22,7 +22,7 @@ AirChat is a **privacy-first messenger** where the server is designed to *know n
 
 | | |
 |---|---|
-| 🔐 **True E2EE** | Content is encrypted on-device before it leaves. 1:1 chats use a fresh ephemeral key per message — forward secrecy by design. The server only ever sees ciphertext. |
+| 🔐 **True E2EE** | Content is encrypted on-device before it leaves. 1:1 chats created on v1.8+ run the Signal Protocol's double ratchet, and new groups run MLS (RFC 9420) — real forward secrecy, not just key freshness. The server only ever sees ciphertext. |
 | 👻 **Ephemeral relay** | Offline messages queue in a Durable Object and self-destruct after 24 hours via alarms — message content never persists. The relay does keep a minimal identity directory and group-membership records for routing. |
 | 📇 **Identity = QR code** | No emails or phone numbers. Scan a peer's QR to exchange keys and start chatting instantly. |
 | 🏷️ **Human usernames** | Set a display name — it rides along in your QR and appears to anyone you message for the first time. |
@@ -119,8 +119,8 @@ Download the latest dev build from **Actions → Android CI → artifacts**, or 
 
 ## Security Model
 
-- **1:1 messages**: X25519 ECDH with a fresh ephemeral sender key **per message**, ChaCha20-Poly1305 AEAD — forward secrecy by design.
-- **Group messages**: one 32-byte symmetric key shared by all members (ChaCha20-Poly1305), distributed pairwise over the 1:1 channel and rotated whenever membership changes. Senders are individually authenticated with Ed25519, so the relay or a member cannot forge another member's message. This gives *key rotation on membership change* — it is **not** per-message forward secrecy or post-compromise security. A current member's key decrypts every message sent under that key. See [SECURITY_GROUP_CRYPTO.md](SECURITY_GROUP_CRYPTO.md).
+- **1:1 messages**: a chat created against a peer that publishes a libsignal prekey bundle runs **X3DH/PQXDH + the Double Ratchet** (`libsignal`), so a compromised key covers one message and the ratchet heals after a compromise. Chats created before that stay on X25519 ECDH with a fresh ephemeral sender key **per message** — key freshness, not forward secrecy against long-term key compromise. Which one a chat uses is recorded on the chat and never rewritten mid-conversation.
+- **Group messages**: a group created when every invited member publishes an MLS KeyPackage is keyed by **MLS (RFC 9420)** via OpenMLS — the TreeKEM ratchet gives per-message forward secrecy, post-compromise security, and revocation that actually removes a removed member's ability to read. Groups created before MLS, or with any member that cannot take it, use one 32-byte symmetric key shared by all members (ChaCha20-Poly1305), distributed pairwise over the 1:1 channel and rotated whenever membership changes — *key rotation on membership change*, **not** per-message forward secrecy. Senders are individually authenticated with Ed25519 either way. See [SECURITY_GROUP_CRYPTO.md](SECURITY_GROUP_CRYPTO.md).
 - **Storage**: SQLCipher-encrypted local database; key material in platform secure storage (Keystore / Keychain).
 - **Server**: sees uid, ciphertext blobs, public identity keys, and the group-membership records it needs for routing. It never sees a group key or any message plaintext. Registration and message signatures use Ed25519.
 - **Media**: encrypted client-side before upload; decryption keys travel only inside E2EE messages.
@@ -137,8 +137,10 @@ Shipped:
 
 Open:
 
-- [ ] A ratchet (X3DH + Double Ratchet) for 1:1 chats. Today each message uses a fresh ephemeral key, which binds a compromise to one message but is *not* forward secrecy against long-term key compromise — [SECURITY_DESIGN.md](SECURITY_DESIGN.md) §3.1 states the exact guarantee.
-- [ ] Group chats on an MLS ratchet (RFC 9420). Today's groups use a rotated shared key. The MLS group crypto is implemented and tested against OpenMLS, but **not yet wired to messaging** — no KeyPackage is published, no Welcome is delivered, and no group in the app uses it, because switching the wire format without version gating would break every peer on a released build. Status per blocker: [SECURITY_GROUP_CRYPTO.md](SECURITY_GROUP_CRYPTO.md) §6–§7.
+- [x] A ratchet (X3DH + Double Ratchet) for 1:1 chats, via `libsignal`. **New chats only**: an existing chat keeps the scheme it used for its messages, so a peer on a released build never receives something it cannot read. [SECURITY_DESIGN.md](SECURITY_DESIGN.md) §3.1 states the exact per-chat guarantee.
+- [x] Group chats on an MLS ratchet (RFC 9420), wired end to end: KeyPackages published and fetched through the relay, Welcome delivered over the 1:1 channel, commits on the group channel, and `cryptoVersion` gating so a group is only ever MLS when every member can read it. [SECURITY_GROUP_CRYPTO.md](SECURITY_GROUP_CRYPTO.md) §6–§8.
+- [ ] Harden MLS against concurrent membership changes: the relay is unordered, so two simultaneous commits from different members are not yet reconciled (§6 step 7).
+- [ ] Local hardening: app lock, lock-screen preview suppression, `FLAG_SECURE` — deferred, on the basis that the OS-level app lock covers it.
 - [ ] Notification preview control. Message text is rendered locally and is visible on the lock screen unless previews are restricted in Android settings.
 - [ ] Voice calls.
 - [ ] iOS App Store release.
